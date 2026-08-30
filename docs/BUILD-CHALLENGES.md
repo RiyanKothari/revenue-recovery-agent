@@ -97,3 +97,25 @@ Format per entry:
 **Impact if missed:** The dashboard's "breakdown by root cause" — a graded output — would have been quietly wrong, and the agent would have reasoned from a wrong premise on a whole class of failures.
 
 **Lesson:** This is the bug that justified writing tests at all. It produced no error and plausible-looking output; only an assertion about a specific expected category surfaced it.
+
+## 2026-08-30 — Every guardrail failed OPEN on a database error
+
+**What broke:** Nothing visibly — found while reading `lib/guardrails.ts` to write tests for it.
+
+**Why:** All four checks destructured only `{ data }` and discarded `error`. On any Supabase failure the query returned `data: null`, so `consent?.dnd` was falsy, `attemptCount ?? 0` became `0`, and `recentActions` was empty — every single rule evaluated to "allowed". A database blip would have silently disabled DND opt-outs, the retry ceiling, the cooldown, and the dispute kill-switch simultaneously, and the agent would have started nudging freely with no error anywhere.
+
+**Fix:** Every check now inspects `error` and fails **closed** — if we cannot prove an action is safe, we don't take it. A null attempt count with no error is also treated as unproven rather than zero. Added 12 tests covering each rule plus a total-outage case that asserts `allowed: false`.
+
+**Impact if missed:** The single worst failure mode in the project. "Bounded and compliant" is the actual grading criterion, and the guardrails would have been decorative under exactly the conditions they exist for.
+
+**Lesson:** Fail-open is the default you get for free from `const { data } = await ...`. Safety code has to state its failure direction explicitly.
+
+## 2026-08-30 — The database client threw at import time
+
+**What broke:** The new guardrail tests crashed before running: `Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY`, thrown from `lib/supabase.ts:1`.
+
+**Why:** `lib/supabase.ts` validated env vars and called `createClient` at module scope. Any import of anything touching the database — including pure safety rules that now accept an injected client — executed that throw. It also explained why every `next build` had needed placeholder credentials: the build was importing route handlers, and the throw fired during collection.
+
+**Fix:** Made the client lazy behind a `Proxy`, constructed on first property access. Imports are now side-effect free and the missing-key error surfaces when something actually queries.
+
+**Impact if missed:** Beyond untestable safety code, a real deploy would have failed at **build** time on any platform where env vars are injected at runtime rather than build time.
