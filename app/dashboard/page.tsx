@@ -29,6 +29,8 @@ interface BatchSummary {
   total_at_risk_paise: number;
   recovered_paise: number;
   recovery_rate: number;
+  attempted_events: number;
+  recovery_rate_attempted: number;
   by_root_cause: Record<string, { count: number; amount_paise: number }>;
   avg_time_to_recovery_minutes: number | null;
   exceptions: { revenue_event_id: string; reason: string }[];
@@ -90,6 +92,17 @@ export default function DashboardPage() {
         <SummaryStat
           label="Recovery rate"
           value={summary ? `${(summary.recovery_rate * 100).toFixed(1)}%` : "—"}
+          tone="positive"
+        />
+        {/* Of the events the agent actually acted on — excludes unknown root
+            causes routed straight to human review, which it never attempted. */}
+        <SummaryStat
+          label="Of attempted"
+          value={
+            summary
+              ? `${(summary.recovery_rate_attempted * 100).toFixed(1)}% of ${summary.attempted_events}`
+              : "—"
+          }
           tone="positive"
         />
         <SummaryStat

@@ -119,3 +119,29 @@ Format per entry:
 **Fix:** Made the client lazy behind a `Proxy`, constructed on first property access. Imports are now side-effect free and the missing-key error surfaces when something actually queries.
 
 **Impact if missed:** Beyond untestable safety code, a real deploy would have failed at **build** time on any platform where env vars are injected at runtime rather than build time.
+
+## 2026-08-30 — "Avg. time to recovery" was divided by the wrong denominator
+
+**What broke:** The average was silently too low.
+
+**Why:** The reducer in `/api/batch-summary` skipped any recovery missing an event row or a `resolved_at` (returning the accumulator unchanged), but then divided the total by `recoveredEvents.length` — the full count, including the ones it had just skipped. Every skipped entry pulled the average toward zero.
+
+**Fix:** Collect the durations it can actually compute with `flatMap`, then divide by that array's length. Also returns `timed_recoveries` so the number is auditable against the recovery count.
+
+## 2026-08-30 — A failed dashboard query was indistinguishable from a failed agent
+
+**What broke:** `/api/batch-summary` dropped `error` on all its queries, so a database failure rendered "Total at risk ₹0 · Recovered ₹0 · Recovery rate 0.0%".
+
+**Why:** Same `const { data } = await ...` pattern as the guardrails bug. With `data` null, every downstream reduce produced a legitimate-looking zero.
+
+**Fix:** The handler returns 500 on any query error. The dashboard already ignores non-200 and keeps its last good numbers, so an outage now reads as stale rather than as a working agent that recovered nothing.
+
+**Impact if missed:** The worst possible demo failure — a screen confidently reporting total failure, with no indication anything was wrong.
+
+## 2026-08-30 — One recovery rate was answering two different questions
+
+**What broke:** Not a bug, a measurement honesty problem noticed while fixing the above.
+
+**Why:** `recovery_rate` divided recoveries by *all* failed events, including ones with an unknown root cause that the classifier deliberately routes straight to human review and the agent never touches. That understates the agent while overstating what it attempted.
+
+**Fix:** Report both. `recovery_rate` stays the business number (of everything that failed, how much came back); `recovery_rate_attempted` divides by events that actually reached `agent_decisions`. The dashboard shows both, so the agent's number can never be mistaken for the business's.
