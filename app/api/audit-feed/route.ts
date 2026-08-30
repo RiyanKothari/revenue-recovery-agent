@@ -12,18 +12,36 @@ export const dynamic = "force-dynamic";
  * can render root cause, action, and rationale together.
  */
 export async function GET() {
-  const { data: logs } = await supabase
+  const { data: logs, error: logsError } = await supabase
     .from("audit_log")
     .select("id, revenue_event_id, stage, detail, created_at")
     .order("created_at", { ascending: false })
     .limit(100);
 
+  // Errors must not degrade into an empty feed. Returning { feed: [] } with a
+  // 200 was worse than failing: the dashboard's !res.ok guard passed, so a
+  // transient database error would clear the reasoning panel mid-demo and
+  // read as "the agent has done nothing".
+  if (logsError) {
+    return NextResponse.json(
+      { error: "audit_feed_query_failed", detail: logsError.message },
+      { status: 500 }
+    );
+  }
+
   const eventIds = [...new Set((logs ?? []).map((l) => l.revenue_event_id))];
 
-  const { data: events } = await supabase
+  const { data: events, error: eventsError } = await supabase
     .from("revenue_events")
     .select("id, amount_paise, root_cause, customer_id")
     .in("id", eventIds.length ? eventIds : ["00000000-0000-0000-0000-000000000000"]);
+
+  if (eventsError) {
+    return NextResponse.json(
+      { error: "audit_feed_query_failed", detail: eventsError.message },
+      { status: 500 }
+    );
+  }
 
   const eventMap = new Map((events ?? []).map((e) => [e.id, e]));
 
