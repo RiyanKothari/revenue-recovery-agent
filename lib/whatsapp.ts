@@ -18,6 +18,28 @@ export async function sendWhatsAppRetryNudge(params: {
     return { success: false, error: "WhatsApp credentials not configured" };
   }
 
+  // --- Send safety. The synthetic batch generates plausible real Indian
+  // mobile numbers (+9198765xxxxx). Seeding 55 events against live
+  // credentials without this would message 55 real strangers.
+  if (process.env.WHATSAPP_DRY_RUN === "true") {
+    console.log(
+      `[whatsapp:dry-run] would send ₹${params.amountRupees.toFixed(2)} retry link to ${params.toPhoneE164}`
+    );
+    return { success: true, messageId: "dry-run" };
+  }
+
+  // Staging redirect: send everything to one number you actually control.
+  const testRecipient = process.env.WHATSAPP_TEST_RECIPIENT;
+  const recipient = testRecipient ?? params.toPhoneE164;
+
+  if (!testRecipient && /^\+?9198765\d{5}$/.test(params.toPhoneE164)) {
+    return {
+      success: false,
+      error:
+        "refused_synthetic_recipient: this looks like a seeded demo number. Set WHATSAPP_TEST_RECIPIENT or WHATSAPP_DRY_RUN=true.",
+    };
+  }
+
   const res = await fetch(
     `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${phoneNumberId}/messages`,
     {
@@ -28,7 +50,7 @@ export async function sendWhatsAppRetryNudge(params: {
       },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to: params.toPhoneE164,
+        to: recipient,
         type: "template",
         template: {
           // This template must be pre-approved in the Meta Business
