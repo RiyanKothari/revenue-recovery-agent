@@ -36,6 +36,21 @@ interface BatchSummary {
   avg_time_to_recovery_minutes: number | null;
   timed_recoveries: number;
   exceptions: { revenue_event_id: string; reason: string }[];
+  experiment: {
+    policy_version: string;
+    holdout_percent: number;
+    treated: { n: number; converted: number; recoveredPaise: number };
+    control: { n: number; converted: number; recoveredPaise: number };
+    lift: {
+      treatedRate: number;
+      controlRate: number;
+      absoluteLiftPp: number;
+      ci95Pp: [number, number] | null;
+      incrementalPaise: number | null;
+      significant: boolean;
+      caveat?: string;
+    };
+  };
 }
 
 interface AuditRow {
@@ -78,6 +93,9 @@ const REASON_LABELS: Record<string, string> = {
   refund_or_dispute_flagged: "Refunded or disputed",
   not_recoverable_or_unknown_cause: "Unrecognised failure — needs review",
   agent_returned_unusable_decision: "Agent response unusable — escalated",
+  negative_expected_value: "Not worth chasing (cost exceeds expected recovery)",
+  holdout_control: "Holdout control — deliberately untreated",
+  experiment_assignment_failed: "Could not record experiment arm",
 };
 
 const ROOT_CAUSE_LABELS: Record<string, string> = {
@@ -90,6 +108,15 @@ const ROOT_CAUSE_LABELS: Record<string, string> = {
   unknown: "Unknown",
   unclassified: "Unclassified",
 };
+
+/**
+ * Not every stopped event is a failure. A holdout control was withheld on
+ * purpose to measure the baseline, and a negative-expected-value skip is the
+ * agent correctly declining to spend ₹50 chasing ₹40. Listing either under
+ * "could not resolve" would misrepresent a deliberate decision as a
+ * shortcoming — and understate the judgment the agent is exercising.
+ */
+const DELIBERATE_REASONS = new Set(["holdout_control", "negative_expected_value"]);
 
 function label(map: Record<string, string>, key: string | undefined): string {
   if (!key) return "—";
@@ -199,6 +226,10 @@ export default function DashboardPage() {
     .filter((row) => row.stage === "agent_decided" || row.stage === "action_executed")
     .slice(0, 25);
 
+  const allStops = summary?.exceptions ?? [];
+  const unresolved = allStops.filter((e) => !DELIBERATE_REASONS.has(e.reason));
+  const declined = allStops.filter((e) => DELIBERATE_REASONS.has(e.reason));
+
   return (
     <Box
       padding="spacing.7"
@@ -260,6 +291,10 @@ export default function DashboardPage() {
           />
         </div>
       </Box>
+
+      {/* --- Measured lift. Everything above is attribution; this is the
+          only number on the page that establishes causation. --- */}
+      {summary && <LiftPanel experiment={summary.experiment} />}
 
       <div className="rr-columns">
         {/* --- Live reasoning feed (the anchor) --- */}
@@ -326,8 +361,8 @@ export default function DashboardPage() {
             </Heading>
           </span>
           <Box display="flex" flexDirection="column" gap="spacing.3">
-            {summary?.exceptions.length ? (
-              summary.exceptions.slice(0, 25).map((exc, i) => (
+            {unresolved.length ? (
+              unresolved.slice(0, 20).map((exc, i) => (
                 <Box
                   key={`${exc.revenue_event_id}-${i}`}
                   display="flex"
@@ -347,8 +382,142 @@ export default function DashboardPage() {
               <Text color="surface.text.gray.muted">No unresolved exceptions yet.</Text>
             )}
           </Box>
+
+          {/* Deliberate non-actions, kept separate from failures — declining
+              to act is judgment, not a shortcoming. */}
+          {declined.length > 0 && (
+            <>
+              <Divider marginTop="spacing.5" marginBottom="spacing.5" />
+              <span className="rr-mono">
+                <Heading size="small" marginBottom="spacing.3">
+                  DECLINED ON PURPOSE
+                </Heading>
+              </span>
+              <Box display="flex" flexDirection="column" gap="spacing.3">
+                {declined.slice(0, 20).map((exc, i) => (
+                  <Box
+                    key={`${exc.revenue_event_id}-${i}`}
+                    display="flex"
+                    justifyContent="space-between"
+                    alignItems="center"
+                    gap="spacing.3"
+                  >
+                    <span className="rr-mono">
+                      <Text size="small" color="surface.text.gray.muted">
+                        {exc.revenue_event_id.slice(0, 8)}
+                      </Text>
+                    </span>
+                    <Badge color="information">{reasonLabel(exc.reason)}</Badge>
+                  </Box>
+                ))}
+              </Box>
+            </>
+          )}
         </Box>
       </div>
+    </Box>
+  );
+}
+
+/**
+ * The holdout result. A slice of eligible events was deliberately left
+ * untreated, so this compares "agent acted" against "agent did nothing" on
+ * comparable populations — the difference is recovery the agent caused,
+ * rather than recovery that merely followed a message being sent.
+ */
+function LiftPanel({
+  experiment,
+}: {
+  experiment: BatchSummary["experiment"];
+}) {
+  const { treated, control, lift } = experiment;
+  const hasArms = treated.n > 0 && control.n > 0;
+
+  return (
+    <Card marginBottom="spacing.7">
+      <CardBody>
+        <Box
+          display="flex"
+          justifyContent="space-between"
+          alignItems="center"
+          gap="spacing.3"
+          marginBottom="spacing.4"
+        >
+          <span className="rr-mono">
+            <Heading size="small">MEASURED LIFT vs HOLDOUT</Heading>
+          </span>
+          <Badge color={lift.significant ? "positive" : "neutral"}>
+            {lift.significant ? "Significant" : "Not yet conclusive"}
+          </Badge>
+        </Box>
+
+        {!hasArms ? (
+          <Text color="surface.text.gray.muted">
+            {`No holdout data yet — ${experiment.holdout_percent}% of eligible events are withheld to measure the do-nothing baseline.`}
+          </Text>
+        ) : (
+          <>
+            <Box display="flex" flexWrap="wrap" gap="spacing.7" marginBottom="spacing.4">
+              <ArmStat
+                label="Treated (agent acted)"
+                rate={lift.treatedRate}
+                arm={treated}
+              />
+              <ArmStat
+                label="Control (left alone)"
+                rate={lift.controlRate}
+                arm={control}
+              />
+              <Box>
+                <Text size="small" color="surface.text.gray.muted">
+                  Incremental recovery
+                </Text>
+                <Heading size="medium" color="feedback.text.positive.intense">
+                  {lift.incrementalPaise == null
+                    ? "—"
+                    : rupees(lift.incrementalPaise)}
+                </Heading>
+                <Text size="xsmall" color="surface.text.gray.muted">
+                  {`${lift.absoluteLiftPp >= 0 ? "+" : ""}${lift.absoluteLiftPp.toFixed(1)}pp${
+                    lift.ci95Pp
+                      ? ` (95% CI ${lift.ci95Pp[0].toFixed(1)} to ${lift.ci95Pp[1].toFixed(1)})`
+                      : ""
+                  }`}
+                </Text>
+              </Box>
+            </Box>
+
+            <Text size="small" color="surface.text.gray.muted">
+              {lift.caveat ??
+                "Recovery the agent caused, over what these events would have returned untouched."}
+            </Text>
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function ArmStat({
+  label,
+  rate,
+  arm,
+}: {
+  label: string;
+  rate: number;
+  arm: { n: number; converted: number };
+}) {
+  return (
+    <Box>
+      <Text size="small" color="surface.text.gray.muted">
+        {label}
+      </Text>
+      <Heading size="medium">{`${(rate * 100).toFixed(1)}%`}</Heading>
+      <span className="rr-mono">
+        <Text size="xsmall" color="surface.text.gray.muted">
+          {`${arm.converted} / ${arm.n}`}
+        </Text>
+      </span>
     </Box>
   );
 }

@@ -32,5 +32,18 @@ Guardrails, the executor and the decision engine all take their database, API cl
 ## Two recovery rates, because one number would be dishonest
 The dashboard reports `recovery_rate` (of everything that failed, how much came back) *and* `recovery_rate_attempted` (of what the agent actually acted on, how much converted). Reasoning: dividing by all failures understates the agent, since it deliberately never touches unknown root causes; dividing only by attempts overstates the business outcome. Reporting one number would have meant picking which way to be misleading.
 
+## A holdout arm, because attributed recovery isn't measured recovery
+A deterministic slice of otherwise-eligible events (default 10%) is left **untreated on purpose**. Reasoning: "we messaged 200 people and recovered ₹4.2L" credits the agent for every customer who would have retried on their own — which is most of the honest uncertainty in this project. The control arm establishes the do-nothing baseline, and the gap between arms is recovery the agent actually *caused*. The bar for this track says "show measured money recovered"; without a control group, the number is attributed, not measured.
+
+Assignment is a pure function of the event id (SHA-256, fixed salt), so it survives webhook retries, needs no stored state to be reproducible, and stays monotonic when the holdout percentage changes — raising it from 10% to 20% keeps the original control group rather than reshuffling everyone and invalidating the comparison.
+
+## Expected value before the model, not after
+A deterministic gate computes `P(recover) × amount × margin − cost(action)` and refuses anything unprofitable *before* the LLM is called. Reasoning: guardrails answer "are we allowed to act"; this answers "is acting worth it". Gross recovery cannot see cost, so an agent optimising it will happily spend ₹50 of human escalation time chasing a ₹40 failure and report the result as a win. This also gives the bounded-agent story a second, quantitative leg — an economically irrational action is never in the model's reach, rather than merely discouraged by prompt wording.
+
+`P(recover)` is a Beta-binomial estimate that starts from priors grounded in what each root cause physically means (a bank timeout had a valid payment method; a decline needs the customer to fix something) and is progressively dominated by the pipeline's own observed outcomes. That is the feedback loop the brief asks for — the economics sharpen as the system runs, using the outcomes table it already maintains.
+
+## Declining to act is a result, not a failure
+The dashboard separates "could not resolve" (DND, cooldown, retry ceiling, unrecognised failure) from "declined on purpose" (holdout control, negative expected value). Reasoning: listing a deliberate economic decision alongside genuine failures misrepresents judgment as a shortcoming. An agent that declines 140 events *because chasing them was unprofitable*, with the arithmetic on screen, is demonstrating something stronger than one that acts everywhere.
+
 ## The dashboard is ledger-first, not metrics-first
 The live reasoning feed is the widest column and the visual anchor; the summary stats sit compact above it. The UI also never prints an internal identifier — actions read "Sent via WhatsApp", stopping reasons read "Reached cooldown window". Reasoning: the moment that proves this is a real agent is watching it reason about a specific failure and say why, in words. Metrics prove the outcome; the feed proves the mechanism, and the mechanism is what's actually novel here.

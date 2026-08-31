@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { computeLift, type ArmOutcome } from "@/lib/experiment";
+import { DEFAULT_POLICY } from "@/lib/policy";
 
 // Without this Next prerenders this handler at build time and the dashboard
 // polls a frozen snapshot forever.
@@ -17,7 +19,8 @@ export const dynamic = "force-dynamic";
  * than failure.
  */
 export async function GET() {
-  const [eventsRes, outcomesRes, exceptionsRes, decisionsRes] = await Promise.all([
+  const [eventsRes, outcomesRes, exceptionsRes, decisionsRes, assignmentsRes] =
+    await Promise.all([
     supabase
       .from("revenue_events")
       .select("id, amount_paise, root_cause, received_at, processed_at"),
@@ -30,10 +33,15 @@ export async function GET() {
       .eq("stage", "stopping_rule_triggered"),
     // Events the agent actually acted on, for an attempted-only rate.
     supabase.from("agent_decisions").select("revenue_event_id"),
-  ]);
+      supabase.from("experiment_assignments").select("revenue_event_id, arm"),
+    ]);
 
   const failed =
-    eventsRes.error ?? outcomesRes.error ?? exceptionsRes.error ?? decisionsRes.error;
+    eventsRes.error ??
+    outcomesRes.error ??
+    exceptionsRes.error ??
+    decisionsRes.error ??
+    assignmentsRes.error;
 
   if (failed) {
     return NextResponse.json(
@@ -88,6 +96,36 @@ export async function GET() {
     attemptedEventIds.has(o.revenue_event_id)
   ).length;
 
+  /**
+   * Measured lift. This is the number the whole holdout exists for: of the
+   * events that were both allowed and worth acting on, a slice was left
+   * untreated, and the gap between the arms is the recovery the agent can
+   * actually claim to have caused. Everything above this line is attribution;
+   * this is measurement.
+   */
+  const assignments = assignmentsRes.data ?? [];
+  const recoveredById = new Map(
+    recoveredEvents.map((o) => [o.revenue_event_id, o.recovered_amount_paise ?? 0])
+  );
+
+  const arms: Record<"treated" | "control", ArmOutcome> = {
+    treated: { n: 0, converted: 0, recoveredPaise: 0 },
+    control: { n: 0, converted: 0, recoveredPaise: 0 },
+  };
+
+  for (const assignment of assignments) {
+    const arm = assignment.arm === "control" ? "control" : "treated";
+    arms[arm].n += 1;
+
+    const recovered = recoveredById.get(assignment.revenue_event_id);
+    if (recovered !== undefined) {
+      arms[arm].converted += 1;
+      arms[arm].recoveredPaise += recovered;
+    }
+  }
+
+  const lift = computeLift(arms.treated, arms.control);
+
   return NextResponse.json({
     total_events: events.length,
     total_at_risk_paise: totalAtRiskPaise,
@@ -100,6 +138,15 @@ export async function GET() {
     by_root_cause: byRootCause,
     avg_time_to_recovery_minutes: avgTimeToRecoveryMinutes,
     timed_recoveries: durationsMinutes.length,
+
+    // Measured causal impact, not attribution.
+    experiment: {
+      policy_version: DEFAULT_POLICY.version,
+      holdout_percent: DEFAULT_POLICY.holdoutPercent,
+      treated: arms.treated,
+      control: arms.control,
+      lift,
+    },
     exceptions: auditExceptions.map((e) => ({
       revenue_event_id: e.revenue_event_id,
       reason: (e.detail as any)?.reason,

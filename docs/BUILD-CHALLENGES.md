@@ -191,3 +191,23 @@ Format per entry:
 **Fix:** Inverted the nesting. Styled wrappers go *around* Blade components (`<span className="rr-mono"><Text/></span>`), with a descendant CSS selector reaching the element Blade renders. The status dot became a sibling of the badge inside a flex `Box` rather than a child of it.
 
 **Lesson:** A design system that constrains its own component API is doing its job. Work around it at the boundary rather than fighting it from inside.
+
+## 2026-09-01 — The batch size made the headline measurement meaningless
+
+**What broke:** Nothing technically — the holdout arm worked on the first run. The problem was that it couldn't say anything.
+
+**Why:** The synthetic batch was 55 events. With a 10% holdout that's ~5 control events, and a conversion rate estimated from 5 observations has a confidence interval so wide it spans almost every plausible value. The measurement existed but carried no information.
+
+**Fix:** Made the batch size configurable and raised the default to 800, giving ~80 control events. Also made `computeLift` refuse to report confidently below 30 per arm — it returns a caveat saying the result is directional rather than printing an interval that looks authoritative.
+
+**Lesson:** Adding a control group is the easy half. Sizing it so the comparison can actually resolve the effect is the half that decides whether the number means anything. A rigorous method at the wrong sample size is still just a number.
+
+## 2026-09-01 — Deliberate non-actions were being displayed as failures
+
+**What broke:** The holdout control events and the negative-expected-value skips appeared in the dashboard's "Exceptions — could not resolve" list.
+
+**Why:** Both write a `stopping_rule_triggered` audit entry, which the exceptions panel reads wholesale. Structurally they *are* stopping rules, so the query was right.
+
+**Fix:** Split the panel. Genuine failures (DND, cooldown, retry ceiling, unrecognised cause) stay under "could not resolve"; holdout and negative-EV move to "Declined on purpose" with an informational badge rather than a negative one.
+
+**Impact if missed:** It would have read as the agent failing on ~15% of the batch when it was in fact making deliberate, correct decisions — understating the system while looking like a defect. The distinction between "couldn't" and "chose not to" is most of the judgment on display here.

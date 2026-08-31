@@ -77,6 +77,30 @@ create table if not exists audit_log (
   created_at timestamptz not null default now()
 );
 
+-- Experiment assignment. A slice of otherwise-eligible events is deliberately
+-- left untreated so recovery can be MEASURED against a do-nothing baseline
+-- rather than merely attributed. Kept in its own table, not as a column on
+-- revenue_events, because an assignment belongs to an experiment and a policy
+-- version, and the trigger record shouldn't be coupled to whichever
+-- experiment happened to be running.
+--
+-- Assignment is a pure function of revenue_event_id (see lib/experiment.ts),
+-- so these rows are reproducible from the event ids alone — the table is an
+-- audit convenience, not the source of truth.
+create table if not exists experiment_assignments (
+  id uuid primary key default gen_random_uuid(),
+  -- unique: a webhook retry must never flip an event between arms
+  revenue_event_id uuid references revenue_events(id) not null unique,
+  arm text not null,                                    -- 'treated' | 'control'
+  policy_version text not null,
+  -- Economics recorded at decision time, so a later policy change can't
+  -- retroactively rewrite why this event was or wasn't acted on.
+  recovery_probability numeric,
+  expected_value_paise bigint,
+  assigned_at timestamptz not null default now()
+);
+
+create index if not exists idx_experiment_assignments_arm on experiment_assignments(arm);
 create index if not exists idx_revenue_events_customer on revenue_events(customer_id);
 create index if not exists idx_agent_decisions_event on agent_decisions(revenue_event_id);
 create index if not exists idx_recovery_actions_decision on recovery_actions(agent_decision_id);

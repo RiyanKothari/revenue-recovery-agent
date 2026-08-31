@@ -8,6 +8,11 @@ import { decide } from "@/lib/decision-engine";
 import { executeAction } from "@/lib/action-executor";
 import { attributeRecovery } from "@/lib/outcome-tracker";
 import { getCustomerRetryHistory, getNextAttemptNumber } from "@/lib/retry-history";
+import { DEFAULT_POLICY } from "@/lib/policy";
+import { assignArm } from "@/lib/experiment";
+import { estimateRecoveryProbability } from "@/lib/propensity";
+import { getObservedStats } from "@/lib/propensity-store";
+import { evaluateExpectedValue } from "@/lib/expected-value";
 
 /**
  * The one entry point for every "revenue at risk" signal in this project.
@@ -15,8 +20,10 @@ import { getCustomerRetryHistory, getNextAttemptNumber } from "@/lib/retry-histo
  *   1. verify + dedupe (idempotency — the bug we already found once)
  *   2. classify (deterministic)
  *   3. guardrails (deterministic, can veto everything downstream)
- *   4. agent decides (LLM, but only within what guardrails allowed)
- *   5. execute + log (every step hits audit_log)
+ *   4. expected value (deterministic — is acting worth it, not just allowed)
+ *   5. experiment arm (a holdout slice is left untreated, on purpose)
+ *   6. agent decides (LLM, but only within what everything above allowed)
+ *   7. execute + log (every step hits audit_log)
  */
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
@@ -133,7 +140,69 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "blocked_by_guardrail", reason: guardrailResult.reason });
   }
 
-  // --- 4. Agent decides (LLM, scoped to pre-approved actions only)
+  // --- 4. Economic gate (deterministic, runs BEFORE the model).
+  // Guardrails decided we're allowed to act; this decides whether acting is
+  // worth it. Running it here means an economically irrational action is
+  // never in the model's reach.
+  const policy = DEFAULT_POLICY;
+  const observed = await getObservedStats(classification.root_cause);
+  const probability = estimateRecoveryProbability(classification.root_cause, observed);
+  const ev = evaluateExpectedValue({
+    amountPaise: paymentEntity.amount,
+    probability,
+    policy,
+  });
+
+  if (!ev.proceed) {
+    await logAudit(event.id, "stopping_rule_triggered", {
+      reason: "negative_expected_value",
+      detail: ev.reason,
+      expected_value_paise: ev.expectedValuePaise,
+      recovery_probability: probability,
+      policy_version: policy.version,
+    });
+    return NextResponse.json({ status: "skipped_negative_ev" });
+  }
+
+  // --- 5. Experiment assignment.
+  // Assigned only among events that were both ALLOWED and WORTH acting on,
+  // so the control arm is a true counterfactual: events we would otherwise
+  // have intervened on. Assigning earlier would dilute the measurement with
+  // events that were never going to be touched.
+  const arm = assignArm(event.id, policy);
+
+  const { error: assignmentError } = await supabase
+    .from("experiment_assignments")
+    .insert({
+      revenue_event_id: event.id,
+      arm,
+      policy_version: policy.version,
+      recovery_probability: probability,
+      expected_value_paise: ev.expectedValuePaise,
+    });
+
+  // Assignment is a pure function of the event id, so a failed write costs
+  // reproducibility, not correctness — but an unrecorded control event would
+  // silently vanish from the denominator and inflate measured lift.
+  if (assignmentError && assignmentError.code !== "23505") {
+    await logAudit(event.id, "stopping_rule_triggered", {
+      reason: "experiment_assignment_failed",
+      detail: assignmentError.message,
+    });
+    return NextResponse.json({ error: "assignment_failed" }, { status: 500 });
+  }
+
+  if (arm === "control") {
+    await logAudit(event.id, "stopping_rule_triggered", {
+      reason: "holdout_control",
+      detail:
+        "Deliberately untreated to measure the do-nothing baseline. No intervention taken.",
+      policy_version: policy.version,
+    });
+    return NextResponse.json({ status: "holdout_control" });
+  }
+
+  // --- 6. Agent decides (LLM, scoped to pre-approved actions only)
   const decision = await decide({
     revenueEventId: event.id,
     classification,
@@ -141,7 +210,7 @@ export async function POST(req: NextRequest) {
     customerRetryHistory: await getCustomerRetryHistory(customerId),
   });
 
-  // --- 5. Execute + log
+  // --- 7. Execute + log
   await executeAction({
     revenueEventId: event.id,
     agentDecisionId: decision.decisionId,

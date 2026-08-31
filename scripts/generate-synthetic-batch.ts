@@ -83,9 +83,28 @@ async function main() {
   }
 
   const crypto = await import("crypto");
-  const batch = generateBatch(55);
 
-  console.log(`Seeding ${batch.length} synthetic revenue-at-risk events...`);
+  /**
+   * Batch size matters statistically, not just cosmetically. With a 10%
+   * holdout, 55 events leaves ~5 controls — far too few to measure lift
+   * against. 800 gives ~80 control events, which is enough for a confidence
+   * interval that means something. The extra Claude calls cost well under a
+   * dollar.
+   */
+  const size = Number(process.argv[2] ?? process.env.BATCH_SIZE ?? 800);
+  if (!Number.isFinite(size) || size < 1) {
+    throw new Error(`Invalid batch size: ${process.argv[2] ?? process.env.BATCH_SIZE}`);
+  }
+
+  const pacingMs = Number(process.env.BATCH_PACING_MS ?? 40);
+  const batch = generateBatch(size);
+
+  console.log(
+    `Seeding ${batch.length} synthetic revenue-at-risk events (pacing ${pacingMs}ms)...`
+  );
+
+  const tally: Record<string, number> = {};
+  let processed = 0;
 
   for (const evt of batch) {
     const body = JSON.stringify(evt.body);
@@ -101,11 +120,26 @@ async function main() {
       body,
     });
 
-    console.log(`${evt.eventId}: ${res.status} ${(await res.json()).status ?? ""}`);
-    await new Promise((r) => setTimeout(r, 150)); // gentle pacing, not a stress test
+    const status = (await res.json()).status ?? "";
+    tally[status] = (tally[status] ?? 0) + 1;
+
+    // Progress rather than 800 lines of output.
+    if (++processed % 50 === 0 || processed === batch.length) {
+      console.log(`  ${processed}/${batch.length} ...`);
+    }
+
+    await new Promise((r) => setTimeout(r, pacingMs)); // gentle pacing, not a stress test
   }
 
-  console.log("Done. Check the dashboard batch summary for recovery numbers.");
+  console.log("\nOutcome by pipeline status:");
+  for (const [status, count] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${String(count).padStart(5)}  ${status}`);
+  }
+
+  console.log(
+    "\nDone. `holdout_control` events were deliberately left untreated — " +
+      "the dashboard's measured lift is computed against them."
+  );
 }
 
 if (require.main === module) {
