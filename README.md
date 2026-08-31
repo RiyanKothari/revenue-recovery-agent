@@ -84,7 +84,7 @@ Dashboard: `/dashboard`
 npm test
 ```
 
-76 tests, no credentials required — the external dependencies are injected, so the safety rules are tested against simulated database failures and the send path is tested without contacting Razorpay or Meta.
+91 tests, no credentials required — the external dependencies are injected, so the safety rules are tested against simulated database failures and the send path is tested without contacting Razorpay or Meta.
 
 Coverage is deliberately weighted toward the failure paths: guardrails under a total database outage, the classifier's fail-closed branch, webhook signature rejection, an agent response that is truncated or out of bounds, and a recovery action that cannot be recorded.
 
@@ -94,9 +94,10 @@ Coverage is deliberately weighted toward the failure paths: guardrails under a t
 app/api/webhooks/razorpay/   the pipeline's entry point
 app/api/batch-summary/       measured metrics for the dashboard
 app/api/audit-feed/          live reasoning feed for the dashboard
+app/api/conformance/         machine-checked safety invariants + cost of the rules
 app/dashboard/               the UI, built on @razorpay/blade
 lib/                         classifier, guardrails, decision engine, MCP client, WhatsApp, audit
-scripts/                     preflight checks, synthetic batch generator
+scripts/                     preflight, conformance verifier, batch generator
 tests/                       unit tests for every module on the critical path
 supabase/schema.sql          full schema
 docs/                        setup, design decisions, build challenges log
@@ -117,6 +118,36 @@ Incremental       ₹43,700   +13.0pp  (95% CI 3.8 to 22.3)
 Assignment is `SHA-256(salt + event_id) % 100`, so it survives webhook retries, is reproducible from event ids alone, and stays monotonic when the holdout percentage changes.
 
 The dashboard reports the interval rather than a bare p-value, and says so out loud when the arms are too small to conclude anything — with a 55-event batch and a 10% holdout you get 5 control events, which measures nothing. The synthetic batch defaults to 800 for that reason.
+
+## Proven safety, not asserted safety
+
+```bash
+npm run verify
+```
+
+Guardrails *enforce* the rules while the pipeline runs. This *proves* they held, afterwards, by re-deriving seven invariants from what was actually recorded:
+
+| | Invariant |
+|---|---|
+| I1 | No customer with DND set was ever contacted |
+| I2 | No event exceeded the retry ceiling |
+| I3 | No customer was contacted twice inside the cooldown |
+| I4 | Every decision chose an action from the permitted set |
+| I5 | Every decision carries a written rationale |
+| I6 | No holdout control event was ever acted on |
+| I7 | Every executed action traces to an authorising decision |
+
+`lib/invariants.ts` deliberately **shares no code with the enforcement path** — it restates each rule independently rather than importing the constants `guardrails.ts` uses. If it imported the same logic, a bug in that logic would pass its own check and the whole exercise would be a tautology. Two independent expressions of the same invariant have to agree, or something is wrong.
+
+The command exits non-zero on any violation, so it can gate a demo or a deploy.
+
+## The cost of the rules
+
+Every guardrail that fires prevents a recovery attempt, and some of those would have succeeded. The dashboard prices that, itemised by category — compliance rules, the holdout, degraded safety checks — because stating what safety costs is more credible than implying it's free.
+
+Events skipped as unprofitable are excluded from that headline: they were skipped precisely because expected recovery didn't cover the cost of trying, so counting them as a loss would double-count a correct decision.
+
+This number is labelled `estimated` everywhere it appears. A blocked event has no outcome to check against, so it uses learned propensity. The holdout produces a **measurement**; this produces an **estimate**; the UI never conflates them.
 
 ## Economic gating
 

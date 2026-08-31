@@ -189,12 +189,37 @@ function useCountUp(target: number | null, durationMs = 600): number {
   return display;
 }
 
+interface Conformance {
+  conformance: {
+    passed: boolean;
+    totalChecked: number;
+    totalViolations: number;
+    results: {
+      id: string;
+      description: string;
+      severity: string;
+      checked: number;
+      violations: { detail: string }[];
+    }[];
+  };
+  complianceCost: {
+    basis: string;
+    byCategory: Record<
+      string,
+      { count: number; atRiskPaise: number; foregonePaise: number }
+    >;
+    totalForegonePaise: number;
+    note: string;
+  };
+}
+
 type FeedStatus = "connecting" | "live" | "offline";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<BatchSummary | null>(null);
   const [feed, setFeed] = useState<AuditRow[]>([]);
   const [status, setStatus] = useState<FeedStatus>("connecting");
+  const [conformance, setConformance] = useState<Conformance | null>(null);
 
   useEffect(() => {
     // A failed poll must not kill the loop — keep the last good numbers on
@@ -219,6 +244,24 @@ export default function DashboardPage() {
 
     load();
     const interval = setInterval(load, 4000); // near-real-time; a socket is overkill for this
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    // Conformance re-derives every invariant across the whole batch, so it is
+    // far heavier than the feed poll and runs on its own slower cadence.
+    const verify = async () => {
+      try {
+        const res = await fetch("/api/conformance");
+        if (!res.ok) return;
+        setConformance(await res.json());
+      } catch {
+        return;
+      }
+    };
+
+    verify();
+    const interval = setInterval(verify, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -295,6 +338,10 @@ export default function DashboardPage() {
       {/* --- Measured lift. Everything above is attribution; this is the
           only number on the page that establishes causation. --- */}
       {summary && <LiftPanel experiment={summary.experiment} />}
+
+      {/* --- Machine-checked safety proof. The guardrails enforce; this
+          re-derives the same properties from what was recorded. --- */}
+      {conformance && <ConformancePanel data={conformance} />}
 
       <div className="rr-columns">
         {/* --- Live reasoning feed (the anchor) --- */}
@@ -519,6 +566,113 @@ function ArmStat({
         </Text>
       </span>
     </Box>
+  );
+}
+
+const COST_CATEGORY_LABELS: Record<string, string> = {
+  compliance: "Compliance rules",
+  measurement: "Holdout (price of knowing)",
+  economics: "Not worth chasing",
+  degraded: "Safety check unavailable",
+  unrecoverable: "Nothing to chase",
+};
+
+/**
+ * Safety, proven and priced.
+ *
+ * The left half is a mechanical re-derivation of each invariant from the
+ * recorded data — not a restatement of what the guardrails intended, but a
+ * check that they actually held. The right half is what those rules cost in
+ * foregone recovery, because safety isn't free and saying so is more credible
+ * than implying it is.
+ */
+function ConformancePanel({ data }: { data: Conformance }) {
+  const { conformance, complianceCost } = data;
+
+  return (
+    <Card marginBottom="spacing.7">
+      <CardBody>
+        <Box
+          display="flex"
+          justifyContent="space-between"
+          alignItems="center"
+          gap="spacing.3"
+          marginBottom="spacing.4"
+        >
+          <span className="rr-mono">
+            <Heading size="small">SAFETY CONFORMANCE</Heading>
+          </span>
+          <Badge color={conformance.passed ? "positive" : "negative"}>
+            {conformance.passed
+              ? `All invariants held · ${conformance.totalChecked} checks`
+              : `${conformance.totalViolations} violation(s)`}
+          </Badge>
+        </Box>
+
+        <div className="rr-columns">
+          <Box display="flex" flexDirection="column" gap="spacing.2">
+            {conformance.results.map((result) => {
+              const ok = result.violations.length === 0;
+              return (
+                <Box
+                  key={result.id}
+                  display="flex"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  gap="spacing.3"
+                >
+                  <Box display="flex" alignItems="center" gap="spacing.3">
+                    <span className="rr-mono">
+                      <Text size="small" color="surface.text.gray.muted">
+                        {result.id}
+                      </Text>
+                    </span>
+                    <Text size="small">{result.description}</Text>
+                  </Box>
+                  <Badge color={ok ? "positive" : "negative"}>
+                    {ok ? `${result.checked} ok` : `${result.violations.length} failed`}
+                  </Badge>
+                </Box>
+              );
+            })}
+          </Box>
+
+          <Box>
+            <Text size="small" color="surface.text.gray.muted" marginBottom="spacing.3">
+              What the rules cost (estimated)
+            </Text>
+            <Box display="flex" flexDirection="column" gap="spacing.2">
+              {Object.entries(complianceCost.byCategory)
+                .filter(([, line]) => line.count > 0)
+                .map(([category, line]) => (
+                  <Box
+                    key={category}
+                    display="flex"
+                    justifyContent="space-between"
+                    gap="spacing.3"
+                  >
+                    <Text size="small">
+                      {label(COST_CATEGORY_LABELS, category)}
+                    </Text>
+                    <span className="rr-mono">
+                      <Text size="small" color="surface.text.gray.muted">
+                        {`${line.count} · ${rupees(line.foregonePaise)}`}
+                      </Text>
+                    </span>
+                  </Box>
+                ))}
+            </Box>
+
+            <Box marginTop="spacing.4">
+              <Heading size="medium">{rupees(complianceCost.totalForegonePaise)}</Heading>
+              <Text size="xsmall" color="surface.text.gray.muted">
+                Recovery foregone to keep the rules — estimated, not measured.
+              </Text>
+            </Box>
+          </Box>
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 

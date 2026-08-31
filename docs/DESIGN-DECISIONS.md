@@ -42,6 +42,22 @@ A deterministic gate computes `P(recover) × amount × margin − cost(action)` 
 
 `P(recover)` is a Beta-binomial estimate that starts from priors grounded in what each root cause physically means (a bank timeout had a valid payment method; a decline needs the customer to fix something) and is progressively dominated by the pipeline's own observed outcomes. That is the feedback loop the brief asks for — the economics sharpen as the system runs, using the outcomes table it already maintains.
 
+## The audit trail is machine-checkable, and the verifier shares no code with the enforcer
+`lib/invariants.ts` re-derives seven safety properties from what was actually recorded — no DND customer was contacted, no event exceeded the retry ceiling, no customer was contacted twice inside the cooldown, every decision chose a permitted action, every decision carries a rationale, no holdout control event was acted on, every action traces to an authorising decision.
+
+The critical design constraint is that it **restates each rule independently** rather than importing the constants `guardrails.ts` uses. Reasoning: if the verifier imported the enforcement logic, a bug in that logic would pass its own check and the exercise would be a tautology. Two independent expressions of the same invariant have to agree, or something is wrong. This is how you would actually audit a system you didn't trust — and the output is a mechanical pass/fail over every event in the batch, not a description of intent.
+
+`npm run verify` exits non-zero on any violation, so it can gate a demo or a deploy. "Compliant escalation, stopping rules, an audit trail" stops being a claim and becomes a check.
+
+I6 is worth calling out: it protects the *headline number* as much as the customer. A single contacted control event silently invalidates the measured lift, and nothing else in the system would notice.
+
+## Safety has a price, and the dashboard prints it
+`lib/compliance-cost.ts` estimates what the stopping rules cost in foregone recovery, itemised by category: compliance rules, the holdout (the price of knowing whether any of this works), and degraded safety checks. Reasoning: every guardrail that fires prevents a recovery attempt, and some of those would have succeeded. Stating that number is more credible than implying safety is free, and it reframes the exceptions list as an itemised bill the system pays deliberately rather than a list of failures.
+
+Two deliberate exclusions from the headline. Events skipped as unprofitable aren't counted as a loss — they were skipped precisely because expected recovery didn't cover the cost of trying, so counting them would double-count a decision that was already correct. Events with nothing to chase aren't counted either.
+
+And the number is labelled `basis: "estimated"` everywhere it appears, because a blocked event has no outcome to measure against. The holdout produces a *measurement*; this produces an *estimate*. Presenting them as the same kind of number would undermine the one claim in this project that is genuinely rigorous.
+
 ## Declining to act is a result, not a failure
 The dashboard separates "could not resolve" (DND, cooldown, retry ceiling, unrecognised failure) from "declined on purpose" (holdout control, negative expected value). Reasoning: listing a deliberate economic decision alongside genuine failures misrepresents judgment as a shortcoming. An agent that declines 140 events *because chasing them was unprofitable*, with the arithmetic on screen, is demonstrating something stronger than one that acts everywhere.
 

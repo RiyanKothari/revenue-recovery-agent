@@ -211,3 +211,23 @@ Format per entry:
 **Fix:** Split the panel. Genuine failures (DND, cooldown, retry ceiling, unrecognised cause) stay under "could not resolve"; holdout and negative-EV move to "Declined on purpose" with an informational badge rather than a negative one.
 
 **Impact if missed:** It would have read as the agent failing on ~15% of the batch when it was in fact making deliberate, correct decisions — understating the system while looking like a defect. The distinction between "couldn't" and "chose not to" is most of the judgment on display here.
+
+## 2026-09-01 — The conformance verifier nearly checked a fraction of the batch and reported a clean pass
+
+**What broke:** Caught while writing `lib/conformance-store.ts`, before it ever ran against real data.
+
+**Why:** PostgREST caps a plain `select` at 1000 rows. An 800-event batch writes several thousand `audit_log` entries and well over a thousand decisions and actions. A straightforward read would have silently returned the first 1000 rows, and the verifier would have checked a slice of the batch and reported "all invariants held" — a confident, wrong attestation from the one component whose entire job is to be trustworthy.
+
+**Fix:** Paginated reads via `.range()` for every table the verifier loads, continuing until a short page comes back.
+
+**Lesson:** A silent truncation is bad anywhere; in a verifier it's worse than having no verifier at all, because it manufactures false confidence. Anything that attests to a property must read the whole population or refuse to answer.
+
+## 2026-09-01 — TypeScript caught a union the tests couldn't
+
+**What broke:** `tsc` rejected the `flatMap` building the verifier's resolved-action index — two branches returning different shapes, so the element type collapsed to `unknown` and every downstream property access failed.
+
+**Why:** `flatMap` widened the union badly across branches where one returned `{decision: null}` and the other `{decision: Decision}`.
+
+**Fix:** Declared the `ResolvedAction` type explicitly and used `map`, since each input produced exactly one output anyway.
+
+**Worth noting:** all 91 tests passed while this was broken — `tsx` strips types without checking them. `npm test` and `npx tsc --noEmit` catch genuinely different classes of bug, and the build only runs the latter.
