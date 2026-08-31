@@ -145,3 +145,23 @@ Format per entry:
 **Why:** `recovery_rate` divided recoveries by *all* failed events, including ones with an unknown root cause that the classifier deliberately routes straight to human review and the agent never touches. That understates the agent while overstating what it attempted.
 
 **Fix:** Report both. `recovery_rate` stays the business number (of everything that failed, how much came back); `recovery_rate_attempted` divides by events that actually reached `agent_decisions`. The dashboard shows both, so the agent's number can never be mistaken for the business's.
+
+## 2026-08-30 — The write path could silently disable the read path's guardrails
+
+**What broke:** Nothing observable — found while adding tests for `lib/action-executor.ts`.
+
+**Why:** Every `recovery_actions` insert was fire-and-forget. That table is exactly what `guardrails.ts` counts to enforce the retry ceiling and the cooldown window. A failing insert meant the attempt count never advanced and the cooldown saw no recent nudge, so the same customer could be messaged indefinitely — the executor quietly switching off the guardrails by not writing the rows they read.
+
+**Fix:** Inserts are checked. A failure writes a loud audit entry and throws, tagged so the surrounding catch can distinguish "the send failed" (record it as failed, carry on) from "the recording failed" (propagate). Throwing is safe because the webhook's idempotency check short-circuits Razorpay's retry on the existing `revenue_event`, so it cannot cause a second send.
+
+**Also fixed:** a persistently failing MCP gateway previously recorded nothing on the error path in some orderings, which would have made the retry ceiling unreachable. There is now a test asserting a failed attempt is still counted.
+
+## 2026-08-30 — `next build` failed with phantom missing-module errors
+
+**What broke:** `PageNotFoundError: Cannot find module for page: /api/audit-feed`, then `Cannot find module .next/server/app/page.js`. Deleting `.next` and rebuilding did not help, which ruled out a stale cache.
+
+**Why:** A `next dev` process from an earlier preview had survived being stopped and was still regenerating `.next` while `next build` wrote into the same directory. The two processes raced and the build read files the dev server had just replaced.
+
+**Fix:** Killed the orphaned `next dev` (and its npm parent and Next server child), then rebuilt clean.
+
+**Lesson:** On Windows especially, `next build` and `next dev` must not share a working directory. If a build fails with missing-module errors that survive `rm -rf .next`, check for a live dev server before touching any code — the error points at the app, but the cause is the process table.
