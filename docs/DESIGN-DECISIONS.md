@@ -19,3 +19,18 @@ The dashboard is built on `@razorpay/blade` — the design system that powers Ra
 
 ## Fail closed on unknown root causes
 `classifier.ts` marks unrecognized failure reasons as `is_recoverable: false`, routing them to human escalation rather than guessing. Reasoning: an agent that's honest about what it doesn't understand is more trustworthy than one that always has an answer — and the submission bar explicitly asks for an honest exception list, not a 100% automation claim.
+
+## Fail closed on *every* path, including infrastructure failure
+Not just unknown root causes. Every guardrail check inspects its database error and refuses when it cannot be evaluated; the executor throws rather than continue if a recovery action cannot be recorded; the decision engine treats a truncated or unparseable model response as an escalation. Reasoning: the first version of the guardrails dropped `error` from each query, so a database blip silently returned "allowed" for all four rules at once — DND opt-outs included. Fail-open is what you get for free from `const { data } = await ...`; safety code has to state its failure direction explicitly. This is the difference between guardrails that hold under failure and guardrails that only hold when nothing is wrong.
+
+## The write path must never blind the read path
+`guardrails.ts` enforces the retry ceiling and cooldown by *counting rows* that `action-executor.ts` writes. So the executor's inserts are checked, and a failure throws instead of continuing — an action that happened but wasn't recorded is worse than one that never happened, because the customer was contacted and no guardrail can see it. Throwing is safe here specifically because the webhook's idempotency check short-circuits Razorpay's retry on the existing event, so it cannot cause a second send. Reasoning: a stateful safety rule is only as good as the writes it reads.
+
+## Safety code is dependency-injected so it can be tested against failure
+Guardrails, the executor and the decision engine all take their database, API client and audit logger as injectable parameters. Reasoning: the interesting behaviour of safety code is what it does when things break, and none of that is reachable by calling the real services and hoping. This is what makes it possible to assert "a total database outage blocks rather than allows" as a test rather than a claim — 51 tests run with no credentials at all.
+
+## Two recovery rates, because one number would be dishonest
+The dashboard reports `recovery_rate` (of everything that failed, how much came back) *and* `recovery_rate_attempted` (of what the agent actually acted on, how much converted). Reasoning: dividing by all failures understates the agent, since it deliberately never touches unknown root causes; dividing only by attempts overstates the business outcome. Reporting one number would have meant picking which way to be misleading.
+
+## The dashboard is ledger-first, not metrics-first
+The live reasoning feed is the widest column and the visual anchor; the summary stats sit compact above it. The UI also never prints an internal identifier — actions read "Sent via WhatsApp", stopping reasons read "Reached cooldown window". Reasoning: the moment that proves this is a real agent is watching it reason about a specific failure and say why, in words. Metrics prove the outcome; the feed proves the mechanism, and the mechanism is what's actually novel here.

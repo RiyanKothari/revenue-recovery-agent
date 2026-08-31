@@ -70,9 +70,17 @@ export function generateBatch(size = 55) {
 }
 
 async function main() {
+  // Next loads .env.local for the app; a standalone tsx script does not.
+  const { loadEnv } = await import("./load-env");
+  loadEnv();
+
   const webhookUrl = process.env.WEBHOOK_URL ?? "http://localhost:3000/api/webhooks/razorpay";
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  if (!secret) throw new Error("RAZORPAY_WEBHOOK_SECRET not set — needed to sign synthetic events.");
+  if (!secret) {
+    throw new Error(
+      "RAZORPAY_WEBHOOK_SECRET not set — needed to sign synthetic events. Add it to .env.local, then run: npm run preflight"
+    );
+  }
 
   const crypto = await import("crypto");
   const batch = generateBatch(55);

@@ -77,6 +77,18 @@ export async function createAndSendRetryLink(params: {
   return { paymentLinkId: parsed.id, shortUrl: parsed.short_url, status: parsed.status };
 }
 
+/**
+ * Connects and lists the tools the MCP server exposes. Used by the preflight
+ * check to prove the merchant token actually authenticates AND that the two
+ * tools this project depends on are present, before a real recovery attempt
+ * discovers otherwise mid-demo.
+ */
+export async function listMcpTools(): Promise<string[]> {
+  const client = await getClient();
+  const result = await client.listTools();
+  return result.tools.map((t) => t.name);
+}
+
 /** Fetches current payment status — used by the outcome tracker. */
 export async function fetchPaymentStatus(paymentId: string): Promise<string> {
   const client = await getClient();

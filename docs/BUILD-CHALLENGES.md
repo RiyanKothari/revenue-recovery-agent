@@ -165,3 +165,29 @@ Format per entry:
 **Fix:** Killed the orphaned `next dev` (and its npm parent and Next server child), then rebuilt clean.
 
 **Lesson:** On Windows especially, `next build` and `next dev` must not share a working directory. If a build fails with missing-module errors that survive `rm -rf .next`, check for a live dev server before touching any code — the error points at the app, but the cause is the process table.
+
+## 2026-09-01 — The agent could crash the webhook on the path meant to be safe
+
+**What broke:** Found while writing tests for `lib/decision-engine.ts`.
+
+**Why:** `JSON.parse(textBlock.text)` was unguarded. The surrounding code was carefully written to fail closed — a refusal or an out-of-bounds action becomes a human escalation — but a `max_tokens` truncation returns a valid JSON *prefix*, which throws. That exception propagated out of the webhook handler as a 500 instead of degrading into an escalation, on the exact path designed to degrade safely.
+
+**Fix:** Wrapped the parse, and required `rationale` to be a string before accepting the response — an action without a rationale is not a usable decision, since the rationale is the explainability artifact. Both cases now escalate.
+
+## 2026-09-01 — `npm run seed:batch` would have failed on a correctly configured machine
+
+**What broke:** The seed script reads `process.env.RAZORPAY_WEBHOOK_SECRET` and throws if it's absent.
+
+**Why:** Next.js loads `.env.local` automatically, but a standalone `tsx` script does not. Nothing in the script's process had ever read the file, so the batch generator would have thrown "RAZORPAY_WEBHOOK_SECRET not set" on a machine where everything was set correctly — the most misleading possible error.
+
+**Fix:** Added a dependency-free `scripts/load-env.ts` and called it from the script. Existing environment variables win over the file so shell and CI overrides still behave predictably. Covered with tests for the cases that would silently corrupt a secret: base64 `=` padding, a `#` inside a value, and quoted values.
+
+## 2026-09-01 — Blade constrains what can go inside its components
+
+**What broke:** `TS2322: Property 'className' does not exist` on `Box`, and `Type 'Element' is not assignable to type 'ReactText'` on `Badge`.
+
+**Why:** Blade's `Box` doesn't accept `className`, and `Badge` accepts text-only children. The design spec calls for a monospaced face on headings and timestamps and a status dot inside the live pill — both of which assume you can nest arbitrary elements inside Blade components.
+
+**Fix:** Inverted the nesting. Styled wrappers go *around* Blade components (`<span className="rr-mono"><Text/></span>`), with a descendant CSS selector reaching the element Blade renders. The status dot became a sibling of the badge inside a flex `Box` rather than a child of it.
+
+**Lesson:** A design system that constrains its own component API is doing its job. Work around it at the boundary rather than fighting it from inside.

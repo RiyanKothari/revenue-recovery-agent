@@ -19,6 +19,17 @@ Verify the install before going further:
 npm test && npm run build
 ```
 
+## 1b. Verify your credentials before running anything
+
+Once `.env.local` is filled in, run:
+```
+npm run preflight
+```
+
+This checks all five services and names exactly what is wrong with each — missing env vars, missing Supabase tables, bad Razorpay keys, a merchant token generated with a trailing newline, an expired WhatsApp token, no Anthropic credit. It exits non-zero if anything blocking fails.
+
+Run it before `npm run seed:batch`. A misconfigured service otherwise surfaces as a confusing failure deep inside the webhook rather than as "your key is wrong".
+
 ## 2. Supabase
 1. Create a project at supabase.com (free tier is enough for this).
 2. In the SQL editor, run `supabase/schema.sql`.
