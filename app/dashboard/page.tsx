@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Box,
   Text,
@@ -12,16 +12,17 @@ import {
 } from "@razorpay/blade/components";
 
 /**
- * Built on Razorpay's own Blade design system (@razorpay/blade) rather
- * than a custom theme — see docs/DESIGN-DECISIONS.md for why. If a
- * specific component name below doesn't match the installed Blade
- * version, check https://blade.razorpay.com/ for the current export —
- * Blade's API surface moves, this file targets 12.x.
+ * Built on Razorpay's own Blade design system (@razorpay/blade) rather than
+ * a custom theme — see docs/DESIGN-DECISIONS.md for why.
  *
- * Three panels, matching the blueprint's dashboard spec exactly:
- *   1. Batch summary — the measured numbers the submission bar asks for
- *   2. Live reasoning feed — the agent "thinking out loud," the demo's hero moment
- *   3. Exceptions — an honest list of what the agent could NOT resolve
+ * Ledger-first, per FRONTEND-DESIGN.md: the live reasoning feed is the
+ * visual anchor and the summary strip is deliberately compact above it. The
+ * feed is the thing that proves this is an agent reasoning about real money,
+ * which is the moment the demo is judged on — the stats are supporting
+ * evidence, not the headline.
+ *
+ * Every number on this page comes from /api/batch-summary and
+ * /api/audit-feed. Nothing is computed or invented client-side.
  */
 
 interface BatchSummary {
@@ -33,6 +34,7 @@ interface BatchSummary {
   recovery_rate_attempted: number;
   by_root_cause: Record<string, { count: number; amount_paise: number }>;
   avg_time_to_recovery_minutes: number | null;
+  timed_recoveries: number;
   exceptions: { revenue_event_id: string; reason: string }[];
 }
 
@@ -44,138 +46,301 @@ interface AuditRow {
   event: { amount_paise: number; root_cause: string; customer_id: string } | null;
 }
 
-function rupees(paise: number): string {
-  return `₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+/**
+ * The UI speaks in outcomes, not internal identifiers — the raw enum belongs
+ * in the audit log, not on screen. Unrecognised values fall back to a
+ * humanised form of the identifier rather than a placeholder, so a new action
+ * or stopping reason added later still reads correctly here without a code
+ * change.
+ */
+function humanise(value: string): string {
+  const cleaned = value.replace(/^guardrail_check_failed:/, "").replace(/[_:]+/g, " ");
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
+
+const ACTION_LABELS: Record<string, string> = {
+  send_retry_link_whatsapp: "Sent WhatsApp retry",
+  send_retry_link_email: "Sent email retry",
+  escalate_human: "Escalated to human",
+};
+
+// Executed rows name what happened, not the channel in the abstract.
+const EXECUTED_LABELS: Record<string, string> = {
+  whatsapp: "Sent via WhatsApp",
+  email: "Sent via email",
+  human_escalation: "Queued for human review",
+};
+
+const REASON_LABELS: Record<string, string> = {
+  customer_dnd_opt_out: "Customer opted out (DND)",
+  max_retry_attempts_reached: "Reached retry limit",
+  cooldown_window_active: "Reached cooldown window",
+  refund_or_dispute_flagged: "Refunded or disputed",
+  not_recoverable_or_unknown_cause: "Unrecognised failure — needs review",
+  agent_returned_unusable_decision: "Agent response unusable — escalated",
+};
+
+const ROOT_CAUSE_LABELS: Record<string, string> = {
+  insufficient_funds: "Insufficient funds",
+  bank_timeout: "Bank timeout",
+  card_declined: "Card declined",
+  gateway_error: "Gateway error",
+  network_drop: "Network drop",
+  invalid_credentials: "Invalid credentials",
+  unknown: "Unknown",
+  unclassified: "Unclassified",
+};
+
+function label(map: Record<string, string>, key: string | undefined): string {
+  if (!key) return "—";
+  return map[key] ?? humanise(key);
+}
+
+/**
+ * Stopping reasons need their own resolver: the guardrail failure reasons are
+ * namespaced (`guardrail_check_failed:consent`), and humanising one naively
+ * yields a bare "Consent" badge, which reads as a category rather than as the
+ * refusal it actually was.
+ */
+function reasonLabel(reason: string | undefined): string {
+  if (!reason) return "—";
+  if (reason.startsWith("guardrail_check_failed")) {
+    return "Safety check unavailable — held back";
+  }
+  return label(REASON_LABELS, reason);
+}
+
+function rupees(paise: number): string {
+  return `₹${Math.round(paise / 100).toLocaleString("en-IN")}`;
+}
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * The one place motion is used for delight rather than function: the summary
+ * strip tweens to its real values on arrival instead of snapping. Reduced
+ * motion still gets the number, immediately.
+ */
+function useCountUp(target: number | null, durationMs = 600): number {
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
+
+  useEffect(() => {
+    if (target == null) return;
+
+    if (prefersReducedMotion()) {
+      fromRef.current = target;
+      setDisplay(target);
+      return;
+    }
+
+    const from = fromRef.current;
+    const delta = target - from;
+    if (delta === 0) return;
+
+    let frame = 0;
+    const started = performance.now();
+
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - started) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + delta * eased);
+      if (t < 1) {
+        frame = requestAnimationFrame(tick);
+      } else {
+        fromRef.current = target;
+      }
+    };
+
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target, durationMs]);
+
+  return display;
+}
+
+type FeedStatus = "connecting" | "live" | "offline";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<BatchSummary | null>(null);
   const [feed, setFeed] = useState<AuditRow[]>([]);
+  const [status, setStatus] = useState<FeedStatus>("connecting");
 
   useEffect(() => {
     // A failed poll must not kill the loop — keep the last good numbers on
-    // screen and try again on the next tick.
+    // screen, mark the feed stale, and try again on the next tick.
     const load = async () => {
       try {
         const [summaryRes, feedRes] = await Promise.all([
           fetch("/api/batch-summary"),
           fetch("/api/audit-feed"),
         ]);
-        if (!summaryRes.ok || !feedRes.ok) return;
+        if (!summaryRes.ok || !feedRes.ok) {
+          setStatus("offline");
+          return;
+        }
         setSummary(await summaryRes.json());
         setFeed((await feedRes.json()).feed ?? []);
+        setStatus("live");
       } catch {
-        return;
+        setStatus("offline");
       }
     };
+
     load();
-    const interval = setInterval(load, 4000); // near-real-time, not websocket — good enough for a demo
+    const interval = setInterval(load, 4000); // near-real-time; a socket is overkill for this
     return () => clearInterval(interval);
   }, []);
 
-  return (
-    <Box padding="spacing.6" backgroundColor="surface.background.gray.subtle">
-      <Heading size="large">Revenue Recovery — Live</Heading>
-      <Text color="surface.text.gray.muted" marginBottom="spacing.6">
-        Extending Razorpay Sprint 2026's failed-payment recovery pattern with root-cause
-        reasoning, bounded actions, and a full audit trail.
-      </Text>
+  const reasoningRows = feed
+    .filter((row) => row.stage === "agent_decided" || row.stage === "action_executed")
+    .slice(0, 25);
 
-      {/* --- Batch Summary --- */}
-      <Box display="flex" flexWrap="wrap" gap="spacing.4" marginBottom="spacing.6">
-        <SummaryStat label="Total at risk" value={summary ? rupees(summary.total_at_risk_paise) : "—"} />
-        <SummaryStat
-          label="Recovered"
-          value={summary ? rupees(summary.recovered_paise) : "—"}
-          tone="positive"
-        />
-        <SummaryStat
-          label="Recovery rate"
-          value={summary ? `${(summary.recovery_rate * 100).toFixed(1)}%` : "—"}
-          tone="positive"
-        />
-        {/* Of the events the agent actually acted on — excludes unknown root
-            causes routed straight to human review, which it never attempted. */}
-        <SummaryStat
-          label="Of attempted"
-          value={
-            summary
-              ? `${(summary.recovery_rate_attempted * 100).toFixed(1)}% of ${summary.attempted_events}`
-              : "—"
-          }
-          tone="positive"
-        />
-        <SummaryStat
-          label="Avg. time to recovery"
-          value={
-            summary?.avg_time_to_recovery_minutes != null
-              ? `${Math.round(summary.avg_time_to_recovery_minutes)} min`
-              : "—"
-          }
-        />
+  return (
+    <Box
+      padding="spacing.7"
+      minHeight="100vh"
+      backgroundColor="surface.background.gray.subtle"
+    >
+      {/* --- Header --- */}
+      <Box
+        display="flex"
+        justifyContent="space-between"
+        alignItems="flex-start"
+        gap="spacing.4"
+        marginBottom="spacing.6"
+      >
+        <Box>
+          <Heading size="large">Revenue Recovery — Live</Heading>
+          <Text color="surface.text.gray.muted">
+            Extending Razorpay Sprint 2026&apos;s failed-payment recovery pattern with
+            root-cause reasoning, bounded actions, and a full audit trail.
+          </Text>
+        </Box>
+        <StatusPill status={status} />
       </Box>
 
-      <Box display="flex" gap="spacing.6" flexWrap="wrap">
-        {/* --- Live Reasoning Feed --- */}
-        <Box flex="1" minWidth="360px">
-          <Heading size="small" marginBottom="spacing.3">
-            Live agent reasoning
-          </Heading>
-          <Box display="flex" flexDirection="column" gap="spacing.3">
-            {feed
-              .filter((row) => row.stage === "agent_decided" || row.stage === "action_executed")
-              .slice(0, 20)
-              .map((row) => (
-                <Card key={row.id}>
-                  <CardBody>
-                    <Box display="flex" justifyContent="space-between" marginBottom="spacing.2">
-                      <Badge color={row.stage === "agent_decided" ? "information" : "positive"}>
-                        {row.stage.replace("_", " ")}
-                      </Badge>
-                      <Text size="small" color="surface.text.gray.muted">
-                        {new Date(row.created_at).toLocaleTimeString()}
-                      </Text>
-                    </Box>
-                    {row.event && (
-                      <Text size="small" color="surface.text.gray.muted">
-                        {row.event.root_cause} · {rupees(row.event.amount_paise)}
-                      </Text>
-                    )}
-                    <Text>{(row.detail as any)?.rationale ?? JSON.stringify(row.detail)}</Text>
-                  </CardBody>
-                </Card>
-              ))}
-          </Box>
+      {/* --- Summary strip: compact, top-anchored, smaller than the feed --- */}
+      <Box marginBottom="spacing.7">
+        <div className="rr-stats">
+          <SummaryStat
+            label="Total at risk"
+            value={summary ? summary.total_at_risk_paise : null}
+            format={rupees}
+          />
+          <SummaryStat
+            label="Recovered"
+            value={summary ? summary.recovered_paise : null}
+            format={rupees}
+            tone="positive"
+          />
+          <SummaryStat
+            label="Recovery rate"
+            value={summary ? summary.recovery_rate * 100 : null}
+            format={(n) => `${n.toFixed(1)}%`}
+            tone="positive"
+            sub={
+              summary
+                ? `${(summary.recovery_rate_attempted * 100).toFixed(1)}% of ${summary.attempted_events} attempted`
+                : undefined
+            }
+          />
+          <SummaryStat
+            label="Avg. time to recovery"
+            value={summary?.avg_time_to_recovery_minutes ?? null}
+            format={(n) => `${Math.round(n)} min`}
+            sub={
+              summary && summary.timed_recoveries > 0
+                ? `across ${summary.timed_recoveries} recoveries`
+                : undefined
+            }
+          />
+        </div>
+      </Box>
+
+      <div className="rr-columns">
+        {/* --- Live reasoning feed (the anchor) --- */}
+        <Box>
+          <span className="rr-mono">
+            <Heading size="small" marginBottom="spacing.3">
+              LIVE REASONING
+            </Heading>
+          </span>
+
+          {reasoningRows.length === 0 ? (
+            <Card>
+              <CardBody>
+                <Text color="surface.text.gray.muted">
+                  No revenue-at-risk events yet — send a test payment failure to see the
+                  agent respond.
+                </Text>
+              </CardBody>
+            </Card>
+          ) : (
+            <div className="rr-scroll">
+              <Box display="flex" flexDirection="column" gap="spacing.3">
+                {reasoningRows.map((row) => (
+                  <FeedEntry key={row.id} row={row} />
+                ))}
+              </Box>
+            </div>
+          )}
         </Box>
 
-        {/* --- Root Cause Breakdown + Exceptions --- */}
-        <Box flex="1" minWidth="320px">
-          <Heading size="small" marginBottom="spacing.3">
-            Breakdown by root cause
-          </Heading>
-          <Box display="flex" flexDirection="column" gap="spacing.2" marginBottom="spacing.6">
-            {summary &&
-              Object.entries(summary.by_root_cause).map(([cause, stats]) => (
-                <Box key={cause} display="flex" justifyContent="space-between">
-                  <Text>{cause}</Text>
-                  <Text color="surface.text.gray.muted">
-                    {stats.count} · {rupees(stats.amount_paise)}
-                  </Text>
-                </Box>
-              ))}
+        {/* --- Root cause breakdown + exceptions --- */}
+        <Box>
+          <span className="rr-mono">
+            <Heading size="small" marginBottom="spacing.3">
+              BY ROOT CAUSE
+            </Heading>
+          </span>
+          <Box display="flex" flexDirection="column" gap="spacing.3" marginBottom="spacing.6">
+            {summary && Object.keys(summary.by_root_cause).length > 0 ? (
+              Object.entries(summary.by_root_cause)
+                .sort((a, b) => b[1].amount_paise - a[1].amount_paise)
+                .map(([cause, stats]) => (
+                  <Box key={cause} display="flex" justifyContent="space-between" gap="spacing.3">
+                    <Text>{label(ROOT_CAUSE_LABELS, cause)}</Text>
+                    <span className="rr-mono">
+                      <Text color="surface.text.gray.muted">
+                        {`${stats.count} · ${rupees(stats.amount_paise)}`}
+                      </Text>
+                    </span>
+                  </Box>
+                ))
+            ) : (
+              <Text color="surface.text.gray.muted">Nothing classified yet.</Text>
+            )}
           </Box>
 
-          <Divider marginBottom="spacing.4" />
+          <Divider marginBottom="spacing.5" />
 
-          <Heading size="small" marginBottom="spacing.3">
-            Exceptions — could not resolve
-          </Heading>
-          <Box display="flex" flexDirection="column" gap="spacing.2">
+          {/* An honest exceptions list is more credible than a suspiciously
+              perfect dashboard — this is deliberately not tucked away. */}
+          <span className="rr-mono">
+            <Heading size="small" marginBottom="spacing.3">
+              EXCEPTIONS — COULD NOT RESOLVE
+            </Heading>
+          </span>
+          <Box display="flex" flexDirection="column" gap="spacing.3">
             {summary?.exceptions.length ? (
-              summary.exceptions.map((exc, i) => (
-                <Box key={i} display="flex" justifyContent="space-between">
-                  <Text size="small">{exc.revenue_event_id.slice(0, 8)}…</Text>
-                  <Badge color="negative">{exc.reason}</Badge>
+              summary.exceptions.slice(0, 25).map((exc, i) => (
+                <Box
+                  key={`${exc.revenue_event_id}-${i}`}
+                  display="flex"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  gap="spacing.3"
+                >
+                  <span className="rr-mono">
+                    <Text size="small" color="surface.text.gray.muted">
+                      {exc.revenue_event_id.slice(0, 8)}
+                    </Text>
+                  </span>
+                  <Badge color="negative">{reasonLabel(exc.reason)}</Badge>
                 </Box>
               ))
             ) : (
@@ -183,29 +348,136 @@ export default function DashboardPage() {
             )}
           </Box>
         </Box>
-      </Box>
+      </div>
     </Box>
   );
 }
 
+function StatusPill({ status }: { status: FeedStatus }) {
+  const config = {
+    live: { color: "positive" as const, text: "Live", dot: "#00A868" },
+    connecting: { color: "neutral" as const, text: "Connecting", dot: "#8B8B8B" },
+    offline: { color: "negative" as const, text: "Feed unavailable", dot: "#D93B3B" },
+  }[status];
+
+  // Badge takes text-only children, so the dot sits beside it rather than
+  // inside. Colour never carries the meaning alone — the label says it too.
+  return (
+    <Box display="flex" alignItems="center" gap="spacing.2">
+      <span
+        className="rr-live-dot"
+        style={{ backgroundColor: config.dot }}
+        aria-hidden="true"
+      />
+      <Badge color={config.color}>{config.text}</Badge>
+    </Box>
+  );
+}
+
+function FeedEntry({ row }: { row: AuditRow }) {
+  const detail = row.detail as Record<string, any>;
+  const executed = row.stage === "action_executed";
+
+  // action_executed rows carry a channel; agent_decided rows carry the action.
+  const actionText = executed
+    ? label(EXECUTED_LABELS, detail?.channel)
+    : label(ACTION_LABELS, detail?.action);
+
+  const failed = executed && detail?.delivery_success === false;
+
+  // The MCP-issued payment link is the verifiable Razorpay-side artifact of
+  // the action — worth surfacing rather than leaving in the audit log.
+  const paymentLinkId = detail?.payment_link_id as string | undefined;
+
+  return (
+    <div className="rr-feed-row">
+      <Card>
+        <CardBody>
+          <Box
+            display="flex"
+            justifyContent="space-between"
+            alignItems="center"
+            gap="spacing.3"
+            marginBottom="spacing.2"
+          >
+            <Badge color={failed ? "negative" : executed ? "positive" : "information"}>
+              {failed ? `${actionText} — delivery failed` : actionText}
+            </Badge>
+            <span className="rr-mono">
+              <Text size="small" color="surface.text.gray.muted">
+                {new Date(row.created_at).toLocaleTimeString("en-IN", { hour12: false })}
+              </Text>
+            </span>
+          </Box>
+
+          {row.event && (
+            <Box display="flex" gap="spacing.2" marginBottom="spacing.2">
+              <Text size="small" color="surface.text.gray.muted">
+                {label(ROOT_CAUSE_LABELS, row.event.root_cause)}
+              </Text>
+              <span className="rr-mono">
+                <Text size="small" color="surface.text.gray.muted">
+                  {rupees(row.event.amount_paise)}
+                </Text>
+              </span>
+            </Box>
+          )}
+
+          {/* The rationale is the explainability artifact — it is the reason
+              this panel exists, so it gets the body treatment, not a caption. */}
+          {detail?.rationale ? (
+            <Text>{detail.rationale}</Text>
+          ) : detail?.note ? (
+            <Text color="surface.text.gray.muted">{detail.note}</Text>
+          ) : detail?.error ? (
+            <Text color="surface.text.gray.muted">
+              {humanise(String(detail.error))}
+            </Text>
+          ) : paymentLinkId ? (
+            <span className="rr-mono">
+              <Text size="small" color="surface.text.gray.muted">
+                {paymentLinkId}
+              </Text>
+            </span>
+          ) : null}
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
 function SummaryStat({
-  label,
+  label: statLabel,
   value,
+  format,
   tone,
+  sub,
 }: {
   label: string;
-  value: string;
+  value: number | null;
+  format: (n: number) => string;
   tone?: "positive";
+  sub?: string;
 }) {
+  const animated = useCountUp(value);
+
   return (
     <Card>
       <CardBody>
         <Text size="small" color="surface.text.gray.muted">
-          {label}
+          {statLabel}
         </Text>
-        <Heading size="medium" color={tone === "positive" ? "feedback.text.positive.intense" : undefined}>
-          {value}
+        <Heading
+          size="medium"
+          color={tone === "positive" ? "feedback.text.positive.intense" : undefined}
+        >
+          {value == null ? "—" : format(animated)}
         </Heading>
+        {sub && (
+          <Text size="xsmall" color="surface.text.gray.muted">
+            {sub}
+          </Text>
+        )}
       </CardBody>
     </Card>
   );

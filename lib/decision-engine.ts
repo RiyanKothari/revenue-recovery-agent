@@ -54,7 +54,26 @@ const SYSTEM_PROMPT = `You are a payment-recovery decision agent. You may ONLY c
 
 You are never allowed to invent a new action, change the payment amount, or waive a guardrail. Guardrails have already been checked before you are called — you are only choosing HOW to act, not whether to. Always explain your reasoning in one or two plain sentences, referencing the root cause and retry history.`;
 
-export async function decide(input: DecisionInput): Promise<Decision> {
+/**
+ * Injected so the fail-closed behaviour can be tested without calling the
+ * API. The interesting paths here are all failure paths — a refusal, a
+ * truncated response, an action outside the allowed set — and none of them
+ * are reachable by asking the real model nicely.
+ */
+export interface DecisionDeps {
+  client: Pick<Anthropic["messages"], "create">;
+  db: Pick<typeof supabase, "from">;
+  audit: typeof logAudit;
+}
+
+export async function decide(
+  input: DecisionInput,
+  deps: Partial<DecisionDeps> = {}
+): Promise<Decision> {
+  const client = deps.client ?? anthropic.messages;
+  const db = deps.db ?? supabase;
+  const audit = deps.audit ?? logAudit;
+
   const userPrompt = `Root cause: ${input.classification.root_cause}
 Payment method: ${input.classification.payment_method}
 Amount at risk: ₹${(input.amountPaise / 100).toFixed(2)}
@@ -65,7 +84,7 @@ Choose the best action and explain why.`;
   // Thinking is disabled deliberately: this is a bounded 3-way choice on a
   // webhook's critical path, and adaptive thinking (Sonnet 5's default) would
   // spend the max_tokens budget on reasoning and truncate the answer.
-  const response = await anthropic.messages.create({
+  const response = await client.create({
     model: "claude-sonnet-5",
     max_tokens: 300,
     thinking: { type: "disabled" },
@@ -85,12 +104,22 @@ Choose the best action and explain why.`;
   // is the guardrail catching everything else.
   let parsed: { action: AgentAction; rationale: string } | null = null;
   if (response.stop_reason !== "refusal" && textBlock?.type === "text") {
-    const candidate = JSON.parse(textBlock.text) as {
-      action: string;
-      rationale: string;
-    };
-    if (ALLOWED_ACTIONS.includes(candidate.action as AgentAction)) {
-      parsed = candidate as { action: AgentAction; rationale: string };
+    // JSON.parse was previously unguarded. A max_tokens truncation returns a
+    // valid JSON *prefix* that throws here, which would have crashed the
+    // webhook on the exact path meant to degrade safely into escalation.
+    try {
+      const candidate = JSON.parse(textBlock.text) as {
+        action: string;
+        rationale: string;
+      };
+      if (
+        ALLOWED_ACTIONS.includes(candidate.action as AgentAction) &&
+        typeof candidate.rationale === "string"
+      ) {
+        parsed = candidate as { action: AgentAction; rationale: string };
+      }
+    } catch {
+      parsed = null; // handled by the escalation fallback below
     }
   }
 
@@ -102,7 +131,7 @@ Choose the best action and explain why.`;
         boundedBy: ["fixed_action_set"],
       };
 
-  const { data: saved, error } = await supabase
+  const { data: saved, error } = await db
     .from("agent_decisions")
     .insert({
       revenue_event_id: input.revenueEventId,
@@ -117,13 +146,13 @@ Choose the best action and explain why.`;
   if (error) throw error;
 
   if (!parsed) {
-    await logAudit(input.revenueEventId, "stopping_rule_triggered", {
+    await audit(input.revenueEventId, "stopping_rule_triggered", {
       reason: "agent_returned_unusable_decision",
       stop_reason: response.stop_reason,
     });
   }
 
-  await logAudit(input.revenueEventId, "agent_decided", {
+  await audit(input.revenueEventId, "agent_decided", {
     decision_id: saved.id,
     action: decision.action,
     rationale: decision.rationale,

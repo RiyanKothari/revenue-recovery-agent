@@ -1,0 +1,97 @@
+/**
+ * Layout, motion and the one typographic risk the design spec calls for.
+ * Blade owns colour and component styling — nothing here overrides a Blade
+ * token, it only handles what Blade's prop surface doesn't reach: the
+ * grid breakpoints, the ledger register, and the feed's arrival animation.
+ */
+
+/* --- The ledger register.
+   Monospace is deliberately confined to headings, timestamps and ids — the
+   things that read as "the record of what happened". Body copy stays on
+   Blade's own stack; letting mono sprawl turns this from ledger into
+   generic terminal aesthetic. */
+/* Applied to a wrapper AROUND a Blade component, never inside one: Blade's
+   Text/Heading set their own font-family, and Badge accepts text-only
+   children, so the descendant selector is what actually reaches them. */
+.rr-mono,
+.rr-mono * {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-feature-settings: "tnum" 1; /* tabular figures so timestamps don't jitter */
+}
+
+/* --- Ledger-first proportions: the feed is the anchor, not the stats. */
+.rr-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.rr-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* Feed comes first in the DOM, so a single column stacks it above the
+   breakdown and exceptions without any reordering. */
+@media (max-width: 900px) {
+  .rr-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rr-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* --- Signature element: each entry is written into the ledger rather than
+   the table silently refreshing. Rows are keyed by audit id, so only
+   genuinely new entries mount and animate; existing rows stay put. */
+@keyframes rr-feed-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rr-feed-row {
+  animation: rr-feed-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* --- Live status pill pulse. */
+@keyframes rr-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.rr-live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  animation: rr-pulse 2s ease-in-out infinite;
+}
+
+/* Motion here communicates state change, so when it's unwelcome the state
+   change still has to land — instant, never suppressed. */
+@media (prefers-reduced-motion: reduce) {
+  .rr-feed-row,
+  .rr-live-dot {
+    animation: none;
+  }
+}
+
+.rr-scroll {
+  max-height: 620px;
+  overflow-y: auto;
+  /* Keeps a long feed from pushing the exceptions list off the page. */
+}
