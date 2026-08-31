@@ -56,6 +56,10 @@ const EXPECTED_TABLES = [
   "outcomes",
   "customer_consent",
   "audit_log",
+  // Added after the initial schema — a stale database is missing exactly
+  // this one, and without it every event 500s at assignment time rather
+  // than failing here with a clear message.
+  "experiment_assignments",
 ];
 
 async function checkEnv() {

@@ -77,7 +77,36 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    return NextResponse.json({ status: "duplicate_ignored" });
+    // Treating every known event id as a finished duplicate loses events. If
+    // the first attempt inserted the row and then died mid-pipeline — an
+    // Anthropic timeout, a transient database error — the event is stuck:
+    // Razorpay's retry short-circuits here forever and it is never decided,
+    // never actioned, and never appears as an exception. It just vanishes.
+    //
+    // An agent_decisions row is the safe marker for "already handled":
+    // decide() writes it before any send happens, so if one exists a re-run
+    // could double-contact the customer, and if it doesn't, resuming is safe.
+    const { count: decided, error: decidedError } = await supabase
+      .from("agent_decisions")
+      .select("id", { count: "exact", head: true })
+      .eq("revenue_event_id", existing.id);
+
+    // Can't tell whether it was handled — refuse rather than risk a second
+    // send. Razorpay will retry.
+    if (decidedError) {
+      return NextResponse.json({ error: "dedupe_check_failed" }, { status: 500 });
+    }
+
+    if ((decided ?? 0) > 0) {
+      return NextResponse.json({ status: "duplicate_ignored" });
+    }
+
+    await logAudit(existing.id, "event_received", {
+      razorpay_event_id: razorpayEventId,
+      note: "Resuming an event whose first attempt did not reach a decision.",
+    });
+
+    return processEvent({ eventId: existing.id, paymentEntity });
   }
 
   const { data: event, error: insertError } = await supabase
@@ -100,6 +129,12 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insertError) {
+    // Two concurrent deliveries can both pass the check above; the unique
+    // constraint is the real enforcement, and losing that race just means
+    // the other request is handling it.
+    if (insertError.code === "23505") {
+      return NextResponse.json({ status: "duplicate_ignored" });
+    }
     return NextResponse.json({ error: insertError.message }, { status: 500 });
   }
 
@@ -108,6 +143,21 @@ export async function POST(req: NextRequest) {
     amount_paise: paymentEntity.amount,
   });
 
+  return processEvent({ eventId: event.id, paymentEntity });
+}
+
+/**
+ * Everything after the event exists in the database. Split out so a resumed
+ * event — one whose first delivery died before reaching a decision — runs the
+ * identical path rather than a second, subtly different one.
+ */
+async function processEvent({
+  eventId,
+  paymentEntity,
+}: {
+  eventId: string;
+  paymentEntity: any;
+}) {
   // --- 2. Classify (deterministic)
   const classification = classify({
     error_code: paymentEntity.error_code,
@@ -118,12 +168,12 @@ export async function POST(req: NextRequest) {
   await supabase
     .from("revenue_events")
     .update({ root_cause: classification.root_cause, processed_at: new Date().toISOString() })
-    .eq("id", event.id);
+    .eq("id", eventId);
 
-  await logAudit(event.id, "classified", { classification });
+  await logAudit(eventId, "classified", { classification });
 
   if (!classification.is_recoverable) {
-    await logAudit(event.id, "stopping_rule_triggered", {
+    await logAudit(eventId, "stopping_rule_triggered", {
       reason: "not_recoverable_or_unknown_cause",
     });
     return NextResponse.json({ status: "not_recoverable" });
@@ -131,10 +181,27 @@ export async function POST(req: NextRequest) {
 
   // --- 3. Guardrails (deterministic veto, checked BEFORE the agent runs)
   const customerId = paymentEntity.customer_id ?? paymentEntity.contact;
-  const guardrailResult = await checkGuardrails(customerId, event.id);
+
+  // Without an identifier there is nothing to look consent up against. The
+  // DND query would match no rows, `consent?.dnd` would be falsy, and the
+  // event would sail through as if the customer had opted in — a fail-open
+  // hole in the one rule that has no exceptions. The conformance verifier
+  // can't check these events either, since it keys on customer_id.
+  if (!customerId) {
+    await logAudit(eventId, "stopping_rule_triggered", {
+      reason: "no_customer_identifier",
+      detail: "Payload carried neither customer_id nor contact — consent cannot be verified.",
+    });
+    return NextResponse.json({
+      status: "blocked_by_guardrail",
+      reason: "no_customer_identifier",
+    });
+  }
+
+  const guardrailResult = await checkGuardrails(customerId, eventId);
 
   if (!guardrailResult.allowed) {
-    await logAudit(event.id, "stopping_rule_triggered", {
+    await logAudit(eventId, "stopping_rule_triggered", {
       reason: guardrailResult.reason,
     });
     return NextResponse.json({ status: "blocked_by_guardrail", reason: guardrailResult.reason });
@@ -154,7 +221,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (!ev.proceed) {
-    await logAudit(event.id, "stopping_rule_triggered", {
+    await logAudit(eventId, "stopping_rule_triggered", {
       reason: "negative_expected_value",
       detail: ev.reason,
       expected_value_paise: ev.expectedValuePaise,
@@ -169,12 +236,12 @@ export async function POST(req: NextRequest) {
   // so the control arm is a true counterfactual: events we would otherwise
   // have intervened on. Assigning earlier would dilute the measurement with
   // events that were never going to be touched.
-  const arm = assignArm(event.id, policy);
+  const arm = assignArm(eventId, policy);
 
   const { error: assignmentError } = await supabase
     .from("experiment_assignments")
     .insert({
-      revenue_event_id: event.id,
+      revenue_event_id: eventId,
       arm,
       policy_version: policy.version,
       recovery_probability: probability,
@@ -185,7 +252,7 @@ export async function POST(req: NextRequest) {
   // reproducibility, not correctness — but an unrecorded control event would
   // silently vanish from the denominator and inflate measured lift.
   if (assignmentError && assignmentError.code !== "23505") {
-    await logAudit(event.id, "stopping_rule_triggered", {
+    await logAudit(eventId, "stopping_rule_triggered", {
       reason: "experiment_assignment_failed",
       detail: assignmentError.message,
     });
@@ -193,7 +260,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (arm === "control") {
-    await logAudit(event.id, "stopping_rule_triggered", {
+    await logAudit(eventId, "stopping_rule_triggered", {
       reason: "holdout_control",
       detail:
         "Deliberately untreated to measure the do-nothing baseline. No intervention taken.",
@@ -204,7 +271,7 @@ export async function POST(req: NextRequest) {
 
   // --- 6. Agent decides (LLM, scoped to pre-approved actions only)
   const decision = await decide({
-    revenueEventId: event.id,
+    revenueEventId: eventId,
     classification,
     amountPaise: paymentEntity.amount,
     customerRetryHistory: await getCustomerRetryHistory(customerId),
@@ -212,13 +279,13 @@ export async function POST(req: NextRequest) {
 
   // --- 7. Execute + log
   await executeAction({
-    revenueEventId: event.id,
+    revenueEventId: eventId,
     agentDecisionId: decision.decisionId,
     decision,
     amountPaise: paymentEntity.amount,
     currency: paymentEntity.currency ?? "INR",
     customerContact: paymentEntity.contact,
-    attemptNumber: await getNextAttemptNumber(event.id),
+    attemptNumber: await getNextAttemptNumber(eventId),
   });
 
   return NextResponse.json({ status: "processed", action: decision.action });

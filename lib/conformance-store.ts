@@ -113,18 +113,22 @@ export async function runConformance(
     }))
   );
 
-  const blocked: BlockedEvent[] = stops.rows
-    .map((row: any) => {
-      const event = events.rows.find((e: any) => e.id === row.revenue_event_id);
-      if (!event) return null;
-      return {
-        revenue_event_id: row.revenue_event_id,
-        reason: row.detail?.reason ?? "unknown",
-        amount_paise: event.amount_paise,
-        root_cause: event.root_cause,
-      };
-    })
-    .filter(Boolean) as BlockedEvent[];
+  // Indexed rather than scanned: an 800-event batch produces thousands of
+  // stop entries, and a nested find() here made the conformance endpoint do
+  // over a million comparisons on every dashboard poll.
+  const eventById = new Map<string, any>(events.rows.map((e: any) => [e.id, e]));
+
+  const blocked: BlockedEvent[] = [];
+  for (const row of stops.rows as any[]) {
+    const event = eventById.get(row.revenue_event_id);
+    if (!event) continue;
+    blocked.push({
+      revenue_event_id: row.revenue_event_id,
+      reason: row.detail?.reason ?? "unknown",
+      amount_paise: event.amount_paise,
+      root_cause: event.root_cause,
+    });
+  }
 
   const complianceCost = estimateComplianceCost(
     blocked,

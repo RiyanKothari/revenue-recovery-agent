@@ -94,6 +94,7 @@ const REASON_LABELS: Record<string, string> = {
   not_recoverable_or_unknown_cause: "Unrecognised failure — needs review",
   agent_returned_unusable_decision: "Agent response unusable — escalated",
   negative_expected_value: "Not worth chasing (cost exceeds expected recovery)",
+  no_customer_identifier: "No customer id — consent unverifiable",
   holdout_control: "Holdout control — deliberately untreated",
   experiment_assignment_failed: "Could not record experiment arm",
 };

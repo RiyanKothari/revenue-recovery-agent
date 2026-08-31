@@ -231,3 +231,33 @@ Format per entry:
 **Fix:** Declared the `ResolvedAction` type explicitly and used `map`, since each input produced exactly one output anyway.
 
 **Worth noting:** all 91 tests passed while this was broken — `tsx` strips types without checking them. `npm test` and `npx tsc --noEmit` catch genuinely different classes of bug, and the build only runs the latter.
+
+## 2026-09-01 — A half-processed event could never be retried
+
+**What broke:** Found reviewing the webhook before the first real batch run.
+
+**Why:** The dedupe check treated *any* known `razorpay_event_id` as a finished duplicate. But the row is inserted at the very start of the pipeline, before classification, the agent call, or execution. If the first delivery inserted the row and then died — an Anthropic timeout, a transient database error, a cold-start deadline — every subsequent Razorpay retry returned `duplicate_ignored`. The event was never decided, never actioned, and never appeared as an exception. It silently vanished.
+
+**Fix:** The marker for "already handled" is now an `agent_decisions` row rather than the event's existence. `decide()` writes that row before any send happens, so if one exists a re-run could double-contact the customer, and if it doesn't, resuming is safe. Everything after the insert moved into `processEvent()` so a resumed delivery runs the identical path rather than a second, subtly different one. A `23505` on insert (two concurrent deliveries racing past the check) is now treated as a duplicate rather than a 500.
+
+**Impact if missed:** Silent event loss under exactly the conditions an 800-event batch with an LLM call in the path will produce. The dashboard would have shown a smaller batch than was sent, with nothing anywhere explaining the gap.
+
+## 2026-09-01 — Consent failed open when the payload had no customer identifier
+
+**What broke:** `customerId` is `paymentEntity.customer_id ?? paymentEntity.contact`. If a payload carried neither, it was `undefined`.
+
+**Why:** The DND lookup then queried for an undefined customer, matched no rows, and `consent?.dnd` evaluated falsy — indistinguishable from "this customer has opted in". The one rule with no exceptions was skippable by omitting a field. The conformance verifier couldn't catch it either, since I1 keys on `customer_id` and skips events without one.
+
+**Fix:** The pipeline now refuses outright when there is no identifier: consent cannot be verified, so no contact is made.
+
+**Lesson:** Fail-closed has to cover missing *inputs*, not just failing queries. An absent identifier reads as an empty result set, and an empty result set reads as permission.
+
+## 2026-09-01 — The synthetic batch couldn't trigger three of the four guardrails
+
+**What broke:** Every event in the batch had its own customer (`cust_synthetic_${i}`), and no `customer_consent` rows were seeded at all.
+
+**Why:** The cooldown rule needs the same customer contacted twice; the retry ceiling needs repeated attempts on one event; DND needs a consent row saying so. With a unique customer per event and an empty consent table, none of those conditions could ever arise. The batch would run clean, the exceptions list would show only non-recoverable events and holdout controls, and conformance invariants I1–I3 would pass **vacuously** — verifying rules that were never exercised.
+
+**Fix:** 25% of events now reuse an earlier customer (deterministically, so re-runs reproduce), contact numbers follow the customer rather than the event index, and the script seeds `customer_consent` with ~5% of the pool opted out before posting any events. Added tests asserting the batch actually contains repeats and a non-empty opted-out set.
+
+**Lesson:** The most dangerous test fixture isn't one that fails — it's one that passes without exercising the thing it claims to test. "All invariants held" across a batch that couldn't violate them is a statement about the fixture, not the system.
