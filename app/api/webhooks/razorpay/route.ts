@@ -25,6 +25,19 @@ import { evaluateExpectedValue } from "@/lib/expected-value";
  *   6. agent decides (LLM, but only within what everything above allowed)
  *   7. execute + log (every step hits audit_log)
  */
+/**
+ * Events that permanently disqualify an event from further recovery. Both
+ * refund shapes are included because Razorpay emits `refund.created` on
+ * initiation and `refund.processed` on settlement, and a merchant may have
+ * subscribed to either.
+ */
+const REFUND_OR_DISPUTE_EVENTS = new Set([
+  "refund.created",
+  "refund.processed",
+  "payment.dispute.created",
+  "payment.dispute.lost",
+]);
+
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
   const signature = req.headers.get("x-razorpay-signature");
@@ -49,6 +62,46 @@ export async function POST(req: NextRequest) {
       });
     }
     return NextResponse.json({ status: "outcome_recorded" });
+  }
+
+  /**
+   * Refunds and disputes arm the kill-switch.
+   *
+   * guardrails.ts refuses to act on an event once a `refund_or_dispute`
+   * stopping rule has been recorded against it — but until this branch
+   * existed, nothing anywhere wrote that entry. The rule read a flag no code
+   * ever set, so the fourth guardrail was unreachable: a customer whose
+   * payment had been refunded could still be chased for it.
+   *
+   * Recording it here rather than polling Razorpay keeps the check off the
+   * webhook's critical path and consistent with how every other signal in
+   * this pipeline arrives.
+   */
+  if (REFUND_OR_DISPUTE_EVENTS.has(eventType)) {
+    const refundedPaymentId =
+      payload.payload?.refund?.entity?.payment_id ??
+      payload.payload?.dispute?.entity?.payment_id ??
+      paymentEntity?.id;
+
+    if (!refundedPaymentId) {
+      return NextResponse.json({ status: "ignored", event: eventType });
+    }
+
+    const eventId = await getDb().findEventIdByPaymentId(refundedPaymentId);
+
+    // A refund on a payment we never saw fail isn't ours to record.
+    if (!eventId) {
+      return NextResponse.json({ status: "no_matching_event" });
+    }
+
+    await logAudit(eventId, "stopping_rule_triggered", {
+      reason: "refund_or_dispute",
+      event: eventType,
+      razorpay_payment_id: refundedPaymentId,
+      detail: "Payment refunded or disputed — no further recovery attempts.",
+    });
+
+    return NextResponse.json({ status: "refund_or_dispute_recorded" });
   }
 
   // Only payment.failed drives the recovery loop for now; other event

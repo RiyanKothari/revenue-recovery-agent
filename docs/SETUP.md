@@ -74,13 +74,19 @@ npm run preflight database
 2. Settings → API Keys → generate a Test key. Copy `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET`.
 3. Settings → Webhooks → Add New Webhook:
    - URL: your local tunnel URL (see step 5) + `/api/webhooks/razorpay`, or your deployed URL
-   - Active events: `payment.failed`, `payment.authorized`, `order.paid`
+   - Active events: `payment.failed`, `payment.authorized`, `order.paid`,
+     `refund.created`, `refund.processed`, `payment.dispute.created`
+     (the refund/dispute events arm the kill-switch — without them the fourth
+     guardrail has nothing to fire on)
    - Set a secret, copy it into `RAZORPAY_WEBHOOK_SECRET`
-4. Generate the MCP merchant token:
+4. Generate the MCP merchant token — use `printf`, not `echo`:
    ```
-   echo $RAZORPAY_KEY_ID:$RAZORPAY_KEY_SECRET | base64
+   printf '%s' "$RAZORPAY_KEY_ID:$RAZORPAY_KEY_SECRET" | base64
    ```
-   Put the output in `RAZORPAY_MCP_MERCHANT_TOKEN`.
+   `echo` appends a newline that gets encoded into the token, producing an
+   auth failure that looks like a wrong key. Put the output in
+   `RAZORPAY_MCP_MERCHANT_TOKEN`; `npm run preflight mcp` decodes it and
+   checks it against your key pair.
 
 ## 4. WhatsApp Cloud API
 1. Meta for Developers → create an app → add the WhatsApp product.

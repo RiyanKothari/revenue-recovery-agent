@@ -125,6 +125,8 @@ export interface RecoveryDb {
 
   // --- ingestion
   findEventIdByRazorpayEventId(razorpayEventId: string): Promise<string | null>;
+  /** Maps a refund/dispute webhook back to the failure it relates to. */
+  findEventIdByPaymentId(razorpayPaymentId: string): Promise<string | null>;
   insertRevenueEvent(row: RevenueEventInsert): Promise<InsertResult>;
   setClassification(eventId: string, rootCause: string, processedAt: string): Promise<void>;
 

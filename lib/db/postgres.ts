@@ -109,6 +109,16 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       return rows[0]?.id ?? null;
     },
 
+    async findEventIdByPaymentId(razorpayPaymentId) {
+      const rows = await query<{ id: string }>(
+        `select id from revenue_events
+          where razorpay_payment_id = $1
+          order by received_at desc limit 1`,
+        [razorpayPaymentId]
+      );
+      return rows[0]?.id ?? null;
+    },
+
     async insertRevenueEvent(row: RevenueEventInsert) {
       return insertOrDuplicate(
         `insert into revenue_events

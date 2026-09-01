@@ -135,6 +135,16 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       return rows[0]?.id ?? null;
     },
 
+    async findEventIdByPaymentId(razorpayPaymentId) {
+      const rows = await query<{ id: string }>(
+        `select id from revenue_events
+          where razorpay_payment_id = ?
+          order by received_at desc limit 1`,
+        [razorpayPaymentId]
+      );
+      return rows[0]?.id ?? null;
+    },
+
     async insertRevenueEvent(row: RevenueEventInsert) {
       const id = randomUUID();
       return insertOrDuplicate(
