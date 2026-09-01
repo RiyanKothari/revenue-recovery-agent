@@ -39,15 +39,38 @@ function mask(value: string | undefined): string {
   return `${value.slice(0, 4)}…${value.slice(-2)} (${value.length} chars)`;
 }
 
-const REQUIRED_VARS = [
-  "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "RAZORPAY_KEY_ID",
-  "RAZORPAY_KEY_SECRET",
-  "RAZORPAY_WEBHOOK_SECRET",
-  "RAZORPAY_MCP_MERCHANT_TOKEN",
-  "ANTHROPIC_API_KEY",
-];
+/**
+ * Grouped by service so the checks can be run one at a time. Credentials
+ * usually arrive service by service, and a run that fails on a key you
+ * haven't created yet buries the result you actually wanted to see.
+ *
+ *   npm run preflight                        -- everything
+ *   npm run preflight supabase razorpay      -- just those
+ *   npm run preflight --skip anthropic       -- everything else
+ */
+const SERVICES = ["supabase", "razorpay", "mcp", "anthropic", "whatsapp"] as const;
+type Service = (typeof SERVICES)[number];
+
+const SERVICE_VARS: Record<Service, string[]> = {
+  supabase: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+  razorpay: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"],
+  mcp: ["RAZORPAY_MCP_MERCHANT_TOKEN"],
+  anthropic: ["ANTHROPIC_API_KEY"],
+  whatsapp: [], // optional — the pipeline runs without it, actions just record as failed
+};
+
+function selectedServices(argv: string[]): Service[] {
+  const args = argv.map((a) => a.toLowerCase());
+
+  const skipIndex = args.indexOf("--skip");
+  if (skipIndex !== -1) {
+    const skipped = new Set(args.slice(skipIndex + 1));
+    return SERVICES.filter((s) => !skipped.has(s));
+  }
+
+  const named = args.filter((a) => (SERVICES as readonly string[]).includes(a));
+  return named.length ? (named as Service[]) : [...SERVICES];
+}
 
 const EXPECTED_TABLES = [
   "revenue_events",
@@ -62,11 +85,17 @@ const EXPECTED_TABLES = [
   "experiment_assignments",
 ];
 
-async function checkEnv() {
+async function checkEnv(services: Service[]) {
   console.log("\nEnvironment");
-  const missing = REQUIRED_VARS.filter((v) => !process.env[v]);
 
-  for (const v of REQUIRED_VARS) {
+  const required = services.flatMap((s) => SERVICE_VARS[s]);
+
+  if (required.length === 0) {
+    record({ name: "variables", status: "skip", detail: "none required for this selection" });
+    return true;
+  }
+
+  for (const v of required) {
     record({
       name: v,
       status: process.env[v] ? "ok" : "fail",
@@ -75,7 +104,7 @@ async function checkEnv() {
     });
   }
 
-  return missing.length === 0;
+  return required.every((v) => Boolean(process.env[v]));
 }
 
 async function checkSupabase() {
@@ -327,18 +356,21 @@ async function checkWhatsApp() {
 }
 
 async function main() {
-  console.log("Revenue Recovery Agent — preflight\n" + "=".repeat(42));
+  const services = selectedServices(process.argv.slice(2));
 
-  const envOk = await checkEnv();
+  console.log("Revenue Recovery Agent — preflight\n" + "=".repeat(42));
+  console.log(`Checking: ${services.join(", ")}`);
+
+  const envOk = await checkEnv(services);
   if (!envOk) {
     console.log("\nSome required variables are missing — the checks below will be partial.");
   }
 
-  await checkSupabase();
-  await checkRazorpayRest();
-  await checkMerchantToken();
-  await checkAnthropic();
-  await checkWhatsApp();
+  if (services.includes("supabase")) await checkSupabase();
+  if (services.includes("razorpay")) await checkRazorpayRest();
+  if (services.includes("mcp")) await checkMerchantToken();
+  if (services.includes("anthropic")) await checkAnthropic();
+  if (services.includes("whatsapp")) await checkWhatsApp();
 
   const failures = results.filter((r) => r.status === "fail");
   const warnings = results.filter((r) => r.status === "warn");
