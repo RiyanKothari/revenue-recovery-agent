@@ -34,23 +34,40 @@ Run it before `npm run seed:batch`. A misconfigured service otherwise surfaces a
 
 Razorpay runs MySQL historically and PostgreSQL / Aurora PostgreSQL for newer transactional systems, so this project supports both. Pick one; nothing above `lib/db/` changes.
 
-**PostgreSQL (recommended — matches what Razorpay uses for new systems)**
-1. Create a project at supabase.com (free tier is enough), or use any Postgres — RDS, Aurora, or local.
-2. Supabase: **Settings → Database → Connection string → URI**. Copy it into `DATABASE_URL` and replace `[YOUR-PASSWORD]` with the database password you set at project creation.
-3. Run `db/schema.postgres.sql` against it (Supabase: SQL Editor → New query → paste → run).
+### Fastest: local, via Docker
 
-**MySQL / TiDB**
-1. TiDB Serverless (tidbcloud.com) has a free tier and speaks the MySQL protocol; any MySQL 8 works too.
-2. Copy the connection URI into `DATABASE_URL` — it starts `mysql://`.
-3. Run `db/schema.mysql.sql` against it.
+No signup, no free-tier limits, works offline.
 
-The driver is inferred from the URL scheme, so `DATABASE_DRIVER` only needs setting if your host hands out a non-standard URI.
-
-Verify before going further:
 ```
+docker compose up -d postgres
+```
+
+Put this in `.env.local`:
+```
+DATABASE_URL=postgresql://rr:local@127.0.0.1:5432/revenue_recovery
+```
+
+To verify the MySQL implementation as well, `docker compose up -d mysql` and use:
+```
+DATABASE_URL=mysql://root:local@127.0.0.1:3306/revenue_recovery
+```
+
+### Hosted alternative
+
+Any Postgres (Supabase, Neon, RDS, Aurora) or MySQL (TiDB Serverless, PlanetScale) works — copy its connection URI into `DATABASE_URL`.
+
+**On Supabase specifically:** use the **connection pooler** string, not the direct one. Settings → Database → Connection string → select *Session pooler*. The direct `db.*.supabase.co` host is IPv6-only on the free tier, and `pg` will fail to connect from most home networks with an unhelpful timeout.
+
+### Then, either way
+
+```
+npm run db:migrate
 npm run preflight database
 ```
-This reports which driver was selected, whether the connection works, and any missing tables.
+
+`db:migrate` applies `db/schema.postgres.sql` or `db/schema.mysql.sql` depending on the URL scheme — no `psql` or `mysql` client needed, and it is safe to re-run. `preflight database` reports the selected driver, whether the connection works, and any missing tables.
+
+`DATABASE_DRIVER` only needs setting if your host hands out a URI whose scheme doesn't say which engine it is.
 
 ## 3. Razorpay test mode
 1. Sign up / log in to the Razorpay Dashboard, switch to **Test Mode** (toggle top-left).
@@ -91,4 +108,4 @@ Once the app is running and webhooks are wired:
 ```
 npm run seed:batch
 ```
-This sends 55 synthetic failed-payment events through the real webhook route — not a shortcut — so the batch summary on the dashboard reflects the actual pipeline.
+This sends 800 synthetic failed-payment events through the real webhook route — not a shortcut — so the batch summary on the dashboard reflects the actual pipeline.

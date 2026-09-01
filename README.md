@@ -65,7 +65,14 @@ Full walkthrough in `docs/SETUP.md` (database, Razorpay test mode, WhatsApp, Ant
 npm install
 ```
 
-Then fill in `.env.local` from `.env.example` and verify every external service before running anything:
+Start a local database (no signup needed — Postgres is the primary path):
+
+```bash
+docker compose up -d postgres
+npm run db:migrate
+```
+
+Then fill in the rest of `.env.local` from `.env.example` and verify every external service before running anything:
 
 ```bash
 npm run preflight
@@ -102,7 +109,7 @@ app/api/conformance/         machine-checked safety invariants + cost of the rul
 app/dashboard/               the UI, built on @razorpay/blade
 lib/                         classifier, guardrails, decision engine, MCP client, WhatsApp, audit
 lib/db/                      repository interface + postgres and mysql implementations
-scripts/                     preflight, conformance verifier, batch generator
+scripts/                     preflight, migrate, conformance verifier, batch generator
 tests/                       unit tests for every module on the critical path
 db/schema.postgres.sql       PostgreSQL schema
 db/schema.mysql.sql          MySQL / TiDB schema

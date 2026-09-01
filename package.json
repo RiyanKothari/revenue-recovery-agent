@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "preflight": "tsx scripts/preflight.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
     "verify": "tsx scripts/verify.ts",
     "seed:batch": "tsx scripts/generate-synthetic-batch.ts",
     "test": "node --import tsx --test tests/*.test.ts"

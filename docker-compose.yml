@@ -1,0 +1,52 @@
+# Local databases for development and for proving the pipeline runs on both
+# engines. Razorpay's published stack uses MySQL historically and PostgreSQL /
+# Aurora PostgreSQL for newer transactional systems; this project supports
+# both behind one repository interface (lib/db/).
+#
+#   docker compose up -d postgres     # primary path
+#   docker compose up -d mysql        # to verify the MySQL implementation
+#
+# Then, with the matching DATABASE_URL in .env.local:
+#   npm run db:migrate
+#   npm run preflight database
+#
+# Credentials here are deliberately trivial — these containers are bound to
+# localhost and hold synthetic demo data only. Never reuse them anywhere real.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: rr-postgres
+    environment:
+      POSTGRES_USER: rr
+      POSTGRES_PASSWORD: local
+      POSTGRES_DB: revenue_recovery
+    ports:
+      - "5432:5432"
+    volumes:
+      - rr-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rr -d revenue_recovery"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8
+    container_name: rr-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: local
+      MYSQL_DATABASE: revenue_recovery
+    ports:
+      - "3306:3306"
+    volumes:
+      - rr-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-plocal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rr-postgres-data:
+  rr-mysql-data:
