@@ -69,6 +69,14 @@ create table if not exists customer_consent (
 );
 
 -- Append-only audit trail. This is what the dashboard's "live feed" queries directly.
+--
+-- Append-only is a hard constraint, not a convention: nothing in the codebase
+-- updates or deletes from this table, so the record of what the agent did
+-- cannot be rewritten after the fact. A useful consequence is that the table
+-- is already event-shaped — one immutable row per pipeline stage, with a
+-- `stage` discriminator and a jsonb payload — which is exactly what a CDC
+-- topic wants. At production volume the dashboard would read this off a
+-- stream (Debezium on Postgres logical replication) rather than polling.
 create table if not exists audit_log (
   id uuid primary key default gen_random_uuid(),
   revenue_event_id uuid references revenue_events(id) not null,

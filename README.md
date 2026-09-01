@@ -51,6 +51,8 @@ Audit trail → Dashboard (live reasoning feed + measured batch summary), built 
 
 Every stage writes to `audit_log`. If a stage doesn't log, it didn't happen as far as the audit-trail requirement is concerned.
 
+Storage is **PostgreSQL** (via Supabase), matching what Razorpay's published stack uses for newer transactional systems — Postgres / Aurora Postgres on core payment workloads, with TimescaleDB serving the real-time analytical layer. `audit_log` is append-only and event-shaped, so at production volume the dashboard routes would read from a CDC stream rather than polling the transactional store. See `docs/DESIGN-DECISIONS.md`.
+
 See `docs/DESIGN-DECISIONS.md` for why each choice was made — that doc is the source for the pitch video's "important decisions" section.
 
 ## Quick start

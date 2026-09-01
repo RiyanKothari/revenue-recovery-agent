@@ -11,6 +11,20 @@ The brief lists seven example directions. This project builds one — payment fa
 ## Razorpay's own agent infrastructure, not a REST wrapper
 The action executor calls Razorpay's official hosted MCP server (`mcp.razorpay.com`) rather than hand-rolling calls to the Payment Links API. Reasoning: Razorpay built this specifically for AI agents to take payment actions — using it is the most direct way to show this project understands and extends their actual product surface, not just their public docs.
 
+## PostgreSQL, because that's what Razorpay builds new systems on
+Their published stack lists the primary transactional database as **MySQL historically, PostgreSQL / Aurora PostgreSQL in newer systems**, carrying core payment and transactional workloads. This project is a new transactional system, so Postgres is the aligned choice rather than a tolerated one — Supabase is managed Postgres.
+
+Deliberately not MySQL. Matching it would mean aligning with the *legacy* half of their transactional stack, and it would cost a full data-layer rewrite: 41 query-builder call sites, five PostgREST `!inner` joins that have no MySQL equivalent, three uses of Postgres error code `23505` in the idempotency and attribution paths, and a `jsonb` containment query that powers the dispute kill-switch. In a six-day build that is a day spent replacing working, tested safety code with untested equivalents, to move *away* from what they use for new systems.
+
+Worth noting the rest of their stack is Postgres-adjacent too — TimescaleDB, a Postgres extension, serves their real-time analytical queries. The batch summary and lift computation in this project are exactly that query shape.
+
+## How this would scale on their infrastructure
+Their pipeline moves database changes into Kafka via CDC (Maxwell reading MySQL binlogs), processes them with Flink/Spark, and lands them in S3, Snowflake, and Elasticsearch for dashboards.
+
+This project polls Postgres directly on a four-second cadence, which is correct for one merchant and a demo batch, and wrong at their volume. The migration path is short by design: `audit_log` is **append-only and event-shaped** — no updates, no deletes, one row per pipeline stage with a `stage` discriminator and a `jsonb` detail payload. That is already the shape a CDC topic wants. At scale the two dashboard routes would read from a stream (Debezium on Postgres logical replication, which is the Postgres counterpart to Maxwell's MySQL binlog reader) rather than querying the transactional store, and the conformance verifier would run over the same event log rather than paginating tables.
+
+The append-only constraint was originally chosen so the audit trail could not be rewritten after the fact. That it also makes the system CDC-ready is a consequence of the same property, not a separate design.
+
 ## Razorpay's own design system, not a custom dark theme
 The dashboard is built on `@razorpay/blade` — the design system that powers Razorpay's own dashboards, websites, and apps (not just a public component library). Reasoning: same logic as the MCP choice — build with what they actually use internally, not an approximation of their aesthetic.
 
