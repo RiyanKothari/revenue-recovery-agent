@@ -293,3 +293,24 @@ Format per entry:
 **Fix:** Moved the containers to non-default host ports (5433 for Postgres, 3307 for MySQL) so they cannot collide with a locally installed service.
 
 **Lesson:** This is a nasty failure mode because every individual signal looks fine — container healthy, port bound, credentials correct — and the error message points at authentication, which is the one thing that isn't wrong. When a just-created container rejects its own credentials, check whether something else already owns the port before touching the credentials.
+
+
+## 2026-09-01 — Razorpay's CLI installer refuses to run on Windows, but a Windows binary exists
+
+**What broke:** `curl -fsSL https://razorpay.com/cli/latest/install.sh | bash` exits with `Unsupported OS: MINGW64_NT-10.0-26200`.
+
+**Why:** The installer switches on `uname -s` and only handles `Darwin` and `Linux`. Under Git Bash on Windows, `uname -s` returns `MINGW64_NT-...`, which falls through to the catch-all and exits 1.
+
+**Fix:** Read the script before running it rather than piping it straight to bash, which showed both the limitation and the URL scheme it uses. Probing that scheme directly found `razorpay_windows_x86_64.zip` published and returning 200 — the binary exists, the installer just doesn't know how to fetch it on Windows. Downloaded and extracted it manually to `~/.local/bin/razorpay.exe`, which is exactly where the official script installs on the platforms it does support.
+
+**Lesson:** Reading a `curl | bash` script before executing it is usually framed as a security habit. Here it was also the fastest debugging step — the OS switch at line 14 answered in seconds what trial and error would have taken much longer to establish.
+
+## 2026-09-01 — The Razorpay CLI does not forward webhooks
+
+**What broke:** Nothing — this settled an open question that was worth answering before committing time to it.
+
+**Why:** The plan had been to use the CLI in place of ngrok if it offered Stripe-CLI-style webhook forwarding and event triggering. Its command list is entirely resource CRUD: `payments`, `orders`, `refunds`, `disputes`, `payment-links`, `subscriptions`, `settlements`, and so on. There is no `listen`, `forward`, or `trigger`.
+
+**Fix:** Kept ngrok for webhook delivery. The CLI earns its place for something else: creating real test-mode data to drive genuine events, and independently verifying what the agent did. `razorpay payment-links list` confirms a link the agent created through the MCP server actually exists on Razorpay's side, and `razorpay refunds create` can fire the refund kill-switch live rather than only in tests.
+
+**Note:** it reads `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` from the environment, so it needs no separate credential store — the values already in `.env.local` are enough.

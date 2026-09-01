@@ -95,6 +95,25 @@ npm run preflight database
 2. Get a temporary access token + phone number ID from the app dashboard for `.env.local`.
 3. Create and get approval for a message template named `payment_retry_nudge` with two body variables (amount, link) — template approval can take a few hours, start this early.
 
+## 4b. Razorpay CLI (optional, useful for the demo)
+
+The official installer (`curl -fsSL https://razorpay.com/cli/latest/install.sh | bash`) only supports macOS and Linux — on Windows it exits with `Unsupported OS`. A Windows binary is published regardless:
+
+```
+curl -fsSL -o razorpay.zip https://razorpay.com/cli/latest/razorpay_windows_x86_64.zip
+unzip razorpay.zip -d ~/.local/bin
+```
+
+It reads `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` from the environment, so no separate `razorpay configure` step is needed.
+
+It does **not** forward webhooks — you still need a tunnel (below). What it is good for during the demo:
+
+```
+razorpay payment-links list     # verify a link the agent created via MCP really exists
+razorpay refunds create ...     # fire the refund kill-switch live
+razorpay payments list          # confirm outcomes independently of the dashboard
+```
+
 ## 5. Local webhook tunnel
 Razorpay needs a public URL to send webhooks to. Use ngrok or similar:
 ```
