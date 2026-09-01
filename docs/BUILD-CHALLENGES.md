@@ -314,3 +314,33 @@ Format per entry:
 **Fix:** Kept ngrok for webhook delivery. The CLI earns its place for something else: creating real test-mode data to drive genuine events, and independently verifying what the agent did. `razorpay payment-links list` confirms a link the agent created through the MCP server actually exists on Razorpay's side, and `razorpay refunds create` can fire the refund kill-switch live rather than only in tests.
 
 **Note:** it reads `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` from the environment, so it needs no separate credential store — the values already in `.env.local` are enough.
+
+
+## 2026-09-01 — The database layer worked in every test and broke on the first real request
+
+**What broke:** The first signed webhook against a live Postgres returned 500: `TypeError: createPostgresDb is not a function`.
+
+**Why:** `getDb()` used `require("./postgres")` to load only the driver actually in use. Under `tsx`, CommonJS interop hands back the named exports and everything works — all 108 tests passed. Inside Next's webpack bundle, `require()` on an ES module does not, so the factory came back undefined at runtime.
+
+**Fix:** Static imports, with the pool still built lazily via the `instance` cache — which is the laziness that actually mattered.
+
+**Lesson:** The test suite and the production bundle are different module systems. A test suite that passes proves the logic, not the packaging, and no amount of additional unit testing would have caught this — only running the thing.
+
+## 2026-09-01 — …and the fix broke every route in a way that named the wrong problem
+
+**What broke:** After switching to static imports, *every* route returned 405 with `No HTTP methods exported in route.ts` — including routes that plainly export `GET`.
+
+**Why:** `pg` and `mysql2` are native Node packages that resolve bindings through dynamic requires. Webpack cannot bundle them, so the module failed to evaluate — and because evaluation never finished, Next found no exports and reported the symptom rather than the cause.
+
+**Fix:** `experimental.serverComponentsExternalPackages: ["pg", "mysql2"]` in `next.config.js`, leaving them to Node's own require at runtime.
+
+**Lesson:** "No HTTP methods exported" almost never means what it says. It means the module threw on the way up. Read it as "this file failed to load" and look at what it imports.
+
+## 2026-09-01 — First live run: the deterministic pipeline holds
+
+**What happened:** A single signed `payment.failed` against real Postgres and the real Razorpay MCP server traversed signature verification, idempotent insert, classification (`insufficient_funds`), all four guardrails, the expected-value gate, and experiment assignment (`arm=treated`) — stopping only at the Claude call, for want of an API key.
+
+Two behaviours were confirmed under real conditions rather than simulated ones:
+
+- **Redelivering the same event resumed it** — the audit log shows *"Resuming an event whose first attempt did not reach a decision"* — and created no duplicate row. That is exactly the half-processed-event bug fixed the day before, reproducing the conditions that cause it: a first attempt that died mid-pipeline.
+- **A tampered signature was rejected with 400** before touching the database.

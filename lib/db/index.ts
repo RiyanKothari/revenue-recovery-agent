@@ -1,4 +1,6 @@
 import type { RecoveryDb } from "./types";
+import { createPostgresDb } from "./postgres";
+import { createMysqlDb } from "./mysql";
 
 export type { RecoveryDb } from "./types";
 export * from "./types";
@@ -52,14 +54,17 @@ export function getDb(): RecoveryDb {
 
   const driver = resolveDriver(url, process.env.DATABASE_DRIVER);
 
-  // Required lazily so the unused driver's package is never loaded.
-  if (driver === "mysql") {
-    const { createMysqlDb } = require("./mysql") as typeof import("./mysql");
-    instance = createMysqlDb(url);
-  } else {
-    const { createPostgresDb } = require("./postgres") as typeof import("./postgres");
-    instance = createPostgresDb(url);
-  }
+  // Statically imported, not require()'d. An earlier version lazily required
+  // only the driver in use, to avoid loading the other one's package. That
+  // works under tsx's CommonJS interop — all the tests passed — and breaks
+  // inside Next's webpack bundle, where require() on an ES module does not
+  // hand back the named exports: `createPostgresDb is not a function`, at
+  // runtime, on the first webhook.
+  //
+  // Importing both costs nothing that matters. Neither driver opens a
+  // connection at import time, and the laziness worth having — not building
+  // a pool until something actually queries — is the `instance` cache below.
+  instance = driver === "mysql" ? createMysqlDb(url) : createPostgresDb(url);
 
   return instance;
 }
