@@ -6,6 +6,12 @@
 #   docker compose up -d postgres     # primary path
 #   docker compose up -d mysql        # to verify the MySQL implementation
 #
+# Host ports are deliberately NOT the defaults. A locally installed
+# PostgreSQL or MySQL service already owns 5432/3306 on many machines, and
+# the collision is silent in the worst way: the container starts fine, the
+# port appears bound, and connections land on the *other* server — which
+# then fails authentication with credentials that look correct.
+#
 # Then, with the matching DATABASE_URL in .env.local:
 #   npm run db:migrate
 #   npm run preflight database
@@ -22,7 +28,7 @@ services:
       POSTGRES_PASSWORD: local
       POSTGRES_DB: revenue_recovery
     ports:
-      - "5432:5432"
+      - "5433:5432"   # 5432 is often taken by a local Postgres service
     volumes:
       - rr-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -38,7 +44,7 @@ services:
       MYSQL_ROOT_PASSWORD: local
       MYSQL_DATABASE: revenue_recovery
     ports:
-      - "3306:3306"
+      - "3307:3306"   # 3306 is often taken by a local MySQL service
     volumes:
       - rr-mysql-data:/var/lib/mysql
     healthcheck:

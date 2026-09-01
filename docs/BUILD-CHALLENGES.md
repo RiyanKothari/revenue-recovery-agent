@@ -282,3 +282,14 @@ Format per entry:
 **A side benefit worth noting:** the guardrail tests got substantially better. They previously mimicked a PostgREST client — a chainable fake with `.select().eq().maybeSingle()` — which tested the mock as much as the rules. They now inject domain operations and describe behaviour ("the consent lookup fails") instead, and the same suite covers both backends because the guardrails cannot tell which one they are talking to.
 
 **Also fixed in passing:** `lib/supabase.ts` is gone, and with it the last module that threw at import time.
+
+
+## 2026-09-01 — A local Postgres service silently hijacked the container's port
+
+**What broke:** `npm run db:migrate` failed with `password authentication failed for user "rr"` — against a container that had just initialised with exactly that user and password, and whose own logs showed a clean startup.
+
+**Why:** `netstat` showed **two** processes listening on 5432: Docker's proxy and `postgres.exe`. The machine already had PostgreSQL 18 installed as a Windows service. Docker still reported the port as bound and the container as healthy — the healthcheck runs *inside* the container, so it never touches the host port — but connections to `127.0.0.1:5432` were reaching the pre-existing server, which has no `rr` role.
+
+**Fix:** Moved the containers to non-default host ports (5433 for Postgres, 3307 for MySQL) so they cannot collide with a locally installed service.
+
+**Lesson:** This is a nasty failure mode because every individual signal looks fine — container healthy, port bound, credentials correct — and the error message points at authentication, which is the one thing that isn't wrong. When a just-created container rejects its own credentials, check whether something else already owns the port before touching the credentials.

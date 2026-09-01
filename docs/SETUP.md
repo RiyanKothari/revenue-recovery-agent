@@ -38,18 +38,20 @@ Razorpay runs MySQL historically and PostgreSQL / Aurora PostgreSQL for newer tr
 
 No signup, no free-tier limits, works offline.
 
+Host ports are 5433 and 3307, not the defaults — a locally installed Postgres or MySQL service commonly owns 5432/3306, and that collision fails in a confusing way (the container is healthy, the port looks bound, and connections land on the other server, which rejects your credentials as wrong).
+
 ```
 docker compose up -d postgres
 ```
 
 Put this in `.env.local`:
 ```
-DATABASE_URL=postgresql://rr:local@127.0.0.1:5432/revenue_recovery
+DATABASE_URL=postgresql://rr:local@127.0.0.1:5433/revenue_recovery
 ```
 
 To verify the MySQL implementation as well, `docker compose up -d mysql` and use:
 ```
-DATABASE_URL=mysql://root:local@127.0.0.1:3306/revenue_recovery
+DATABASE_URL=mysql://root:local@127.0.0.1:3307/revenue_recovery
 ```
 
 ### Hosted alternative
