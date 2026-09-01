@@ -410,3 +410,43 @@ That last check matters more than the status codes: it confirms the Razorpay-sid
 **Fix:** Added a closing line after the variable: *"If you have already paid, please ignore this message."* That satisfies the rule and is worth having regardless — a customer who paid between the failure and the nudge now knows not to pay twice, which is a real hazard when the retry link is still live.
 
 **Also worth recording:** the template was submitted through the Graph API rather than WhatsApp Manager (`POST /{waba_id}/message_templates`). The temporary token from API Setup already carries `whatsapp_business_management`, so no UI navigation was needed, and the rejection came back as a precise error code instead of an inline form message.
+
+
+## 2026-09-01 — One transient provider error killed an entire 200-event batch
+
+**What broke:** A 200-event run stopped at event 16 with `SyntaxError: Unexpected end of JSON input`, and exited 0 so it looked like it had finished.
+
+**Why:** Three failures compounding. Gemini returned a transient `503 high demand`; the adapter threw; the webhook had no error handling so Next returned an empty-bodied 500; and the batch script called `res.json()` unguarded, which threw on the empty body and ended the loop. A single blip on one event destroyed the run and the measured numbers with it.
+
+**Fix, at all three layers:**
+
+- **Retry transient failures.** The model call now retries 429/5xx and network errors with exponential backoff, and deliberately does *not* retry 400/404 — those are bugs in our request, and retrying hides the cause.
+- **Return JSON on error.** The webhook wraps the pipeline and returns a structured 500 with a reason, so callers have something to parse and the failure reaches the audit log. The event stays resumable: no decision was recorded, so a redelivery picks it up.
+- **Absorb failures in the batch.** Response parsing is guarded, failures are counted as their own outcome, and the run continues. A batch that stops on first error cannot produce a measured number.
+
+**Lesson:** Across hundreds of events, some transient failures are certain. Anything that must produce a measurement has to survive them individually rather than treating the first one as fatal.
+
+## 2026-09-01 — The Gemini free tier is 20 requests per day
+
+**What broke:** After the batch was hardened, it completed — and reported `154 pipeline_error` out of 200.
+
+**Why:** Every one was `HTTP 429`. Querying the quota detail named it exactly:
+
+```
+quota: GenerateRequestsPerDayPerProjectPerModel-FreeTier | value: 20
+```
+
+Twenty generate requests per day, per model, per project. The five live events and a handful of probes had already spent them. The retry wrapper behaved correctly and could not help: retrying an exhausted daily quota just fails four times more slowly.
+
+**Status:** not a code problem, and not fixable in code. The batch needs roughly 500 model calls for 800 events. Options are an Anthropic key (~$0.10 for the full batch — the adapter already prefers it when present), enabling billing on the Google project, or rotating models, since the quota is per-model and three lite variants still answer. Rotating buys tens of requests, not hundreds.
+
+**What the run did prove.** The batch survived 154 consecutive failures and reported them honestly instead of dying, which is exactly what the hardening above was for. And the guardrails fired on real data for the first time:
+
+```
+  12  customer_dnd_opt_out
+   5  cooldown_window_active
+  23  holdout_control
+   3  not_recoverable_or_unknown_cause
+```
+
+Those first two were structurally unreachable until the synthetic batch was fixed earlier the same day to reuse customers and seed consent rows. Before that, a batch could not have tripped either rule.

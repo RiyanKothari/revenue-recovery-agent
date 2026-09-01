@@ -181,17 +181,41 @@ async function main() {
     const body = JSON.stringify(evt.body);
     const signature = crypto.createHmac("sha256", secret).update(body).digest("hex");
 
-    const res = await fetch(webhookUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-razorpay-signature": signature,
-        "x-razorpay-event-id": evt.eventId,
-      },
-      body,
-    });
+    /**
+     * One bad event must never end the run.
+     *
+     * This previously called res.json() directly. A single transient provider
+     * 503 made the webhook return an empty-bodied 500, res.json() threw
+     * "Unexpected end of JSON input", and a 200-event batch died at event 16 —
+     * taking the measured numbers with it. Across hundreds of events some
+     * failures are close to certain; the batch has to absorb and report them.
+     */
+    let status: string;
+    try {
+      const res = await fetch(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-razorpay-signature": signature,
+          "x-razorpay-event-id": evt.eventId,
+        },
+        body,
+      });
 
-    const status = (await res.json()).status ?? "";
+      const raw = await res.text();
+      let parsed: any = null;
+      try {
+        parsed = raw ? JSON.parse(raw) : null;
+      } catch {
+        parsed = null; // non-JSON body — recorded as an http_* outcome below
+      }
+
+      status = parsed?.status ?? parsed?.error ?? `http_${res.status}`;
+    } catch (err: any) {
+      // The request itself failed — server restarted, connection reset.
+      status = `request_failed:${String(err?.message ?? err).slice(0, 40)}`;
+    }
+
     tally[status] = (tally[status] ?? 0) + 1;
 
     // Progress rather than 800 lines of output.
@@ -205,6 +229,38 @@ async function main() {
   console.log("\nOutcome by pipeline status:");
   for (const [status, count] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${String(count).padStart(5)}  ${status}`);
+  }
+
+  /**
+   * Anything that is not a recognised pipeline outcome is a failed event,
+   * and failed events silently shrink the batch the measured numbers rest on.
+   *
+   * Listed explicitly rather than matched by prefix: the first version looked
+   * for `http_*` and missed `pipeline_error`, which was 154 of 200 events on
+   * the very next run — the exact case the warning exists for.
+   */
+  const PIPELINE_OUTCOMES = new Set([
+    "processed",
+    "holdout_control",
+    "blocked_by_guardrail",
+    "not_recoverable",
+    "skipped_negative_ev",
+    "duplicate_ignored",
+    "outcome_recorded",
+    "refund_or_dispute_recorded",
+    "no_matching_event",
+    "ignored",
+  ]);
+
+  const failed = Object.entries(tally)
+    .filter(([s]) => !PIPELINE_OUTCOMES.has(s))
+    .reduce((sum, n) => sum + n[1], 0);
+
+  if (failed > 0) {
+    console.log(
+      `\n${failed}/${batch.length} events did not process. Re-run the batch to pick them up — ` +
+        `the webhook resumes any event that never reached a decision, so nothing is duplicated.`
+    );
   }
 
   console.log(

@@ -201,6 +201,54 @@ export function createGeminiModel(
   };
 }
 
+// --- resilience ------------------------------------------------------------
+
+/**
+ * Transient provider failures are normal traffic, not exceptions.
+ *
+ * A single `503 high demand` from Gemini killed a 200-event batch run: the
+ * adapter threw, the webhook 500'd, and the batch stopped. Over hundreds of
+ * events a few transient failures are close to certain, so the model call
+ * retries them rather than letting each one cost an event.
+ *
+ * Only retried for statuses that mean "try again" — rate limits, overload,
+ * and upstream errors. A 400 or 404 is a bug in our request and retrying it
+ * just wastes time and hides the cause.
+ */
+const RETRYABLE = /(429|500|502|503|504)/;
+const MAX_ATTEMPTS = 4;
+
+export function withRetry(model: DecisionModel): DecisionModel {
+  return {
+    name: model.name,
+    async complete(params) {
+      let lastError: unknown;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          return await model.complete(params);
+        } catch (err: any) {
+          lastError = err;
+          const message = String(err?.message ?? err);
+          const retryable = RETRYABLE.test(message) || /fetch failed|ECONNRESET|ETIMEDOUT/i.test(message);
+
+          if (!retryable || attempt === MAX_ATTEMPTS) throw err;
+
+          // 1s, 2s, 4s — enough for a demand spike to clear without
+          // stalling a batch for minutes.
+          const backoffMs = 1000 * 2 ** (attempt - 1);
+          console.warn(
+            `[decision-model] ${model.name} attempt ${attempt}/${MAX_ATTEMPTS} failed (${message.slice(0, 80)}); retrying in ${backoffMs}ms`
+          );
+          await new Promise((r) => setTimeout(r, backoffMs));
+        }
+      }
+
+      throw lastError;
+    },
+  };
+}
+
 // --- selection -------------------------------------------------------------
 
 /**
@@ -210,11 +258,11 @@ export function createGeminiModel(
  */
 export function resolveDecisionModel(env = process.env): DecisionModel {
   if (env.ANTHROPIC_API_KEY) {
-    return createAnthropicModel(env.ANTHROPIC_API_KEY, env.DECISION_MODEL);
+    return withRetry(createAnthropicModel(env.ANTHROPIC_API_KEY, env.DECISION_MODEL));
   }
 
   if (env.GEMINI_API_KEY) {
-    return createGeminiModel(env.GEMINI_API_KEY, env.DECISION_MODEL);
+    return withRetry(createGeminiModel(env.GEMINI_API_KEY, env.DECISION_MODEL));
   }
 
   throw new Error(

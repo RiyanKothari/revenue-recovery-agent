@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
       note: "Resuming an event whose first attempt did not reach a decision.",
     });
 
-    return processEvent({ eventId: existingId, paymentEntity });
+    return guarded(existingId, () => processEvent({ eventId: existingId, paymentEntity }));
   }
 
   let inserted;
@@ -189,7 +189,34 @@ export async function POST(req: NextRequest) {
     amount_paise: paymentEntity.amount,
   });
 
-  return processEvent({ eventId: inserted.id, paymentEntity });
+  return guarded(inserted.id, () => processEvent({ eventId: inserted.id, paymentEntity }));
+}
+
+/**
+ * Turns an unhandled failure into a JSON 500 rather than an empty body.
+ *
+ * Next returns no body for an uncaught throw, which gave clients nothing to
+ * parse — that is what killed the first batch run. Callers get a reason they
+ * can log, and the event stays resumable: no decision was recorded, so a
+ * redelivery picks it up where it stopped.
+ */
+async function guarded(
+  eventId: string,
+  run: () => Promise<Response>
+): Promise<Response> {
+  try {
+    return await run();
+  } catch (err: any) {
+    const detail = String(err?.message ?? err);
+    await logAudit(eventId, "stopping_rule_triggered", {
+      reason: "pipeline_error",
+      detail: detail.slice(0, 300),
+    });
+    return NextResponse.json(
+      { error: "pipeline_error", detail: detail.slice(0, 300) },
+      { status: 500 }
+    );
+  }
 }
 
 /**
