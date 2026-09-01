@@ -399,3 +399,14 @@ plink_TWmHPITxEDVRtq  created  396000  https://rzp.io/rzp/VxS0YrX7
 ```
 
 That last check matters more than the status codes: it confirms the Razorpay-side artifact through a different tool and a different credential path than the one that created it.
+
+
+## 2026-09-01 — WhatsApp rejects a template whose last character is a variable
+
+**What broke:** Submitting `payment_retry_nudge` through the Graph API returned `OAuthException 100`, subcode 2388299: *"Variables can't be at the start or end of the template."*
+
+**Why:** The body read `...retry it securely here: {{2}}` — the link variable was the final token. Meta refuses templates that open or close on a placeholder, presumably because a rendered message beginning or ending in raw substituted content reads as spam.
+
+**Fix:** Added a closing line after the variable: *"If you have already paid, please ignore this message."* That satisfies the rule and is worth having regardless — a customer who paid between the failure and the nudge now knows not to pay twice, which is a real hazard when the retry link is still live.
+
+**Also worth recording:** the template was submitted through the Graph API rather than WhatsApp Manager (`POST /{waba_id}/message_templates`). The temporary token from API Setup already carries `whatsapp_business_management`, so no UI navigation was needed, and the rejection came back as a precise error code instead of an inline form message.

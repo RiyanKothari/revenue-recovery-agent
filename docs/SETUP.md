@@ -93,7 +93,23 @@ npm run preflight database
 ## 4. WhatsApp Cloud API
 1. Meta for Developers → create an app → add the WhatsApp product.
 2. Get a temporary access token + phone number ID from the app dashboard for `.env.local`.
-3. Create and get approval for a message template named `payment_retry_nudge` with two body variables (amount, link) — template approval can take a few hours, start this early.
+3. Set `WHATSAPP_BUSINESS_ACCOUNT_ID` too — with it, `npm run preflight whatsapp` reports the template's approval status and checks its body has exactly the two variables `lib/whatsapp.ts` sends.
+4. Submit the template. Faster through the Graph API than WhatsApp Manager — the API Setup token already carries `whatsapp_business_management`:
+
+   ```
+   curl -X POST "https://graph.facebook.com/v20.0/$WHATSAPP_BUSINESS_ACCOUNT_ID/message_templates"      -H "Authorization: Bearer $WHATSAPP_ACCESS_TOKEN"      -H "Content-Type: application/json"      -d '{
+       "name": "payment_retry_nudge",
+       "category": "UTILITY",
+       "language": "en",
+       "components": [{
+         "type": "BODY",
+         "text": "Hi, your payment of {{1}} could not be completed. You can retry it securely here: {{2}} If you have already paid, please ignore this message.",
+         "example": { "body_text": [["₹1,299.00", "https://rzp.io/rzp/example"]] }
+       }]
+     }'
+   ```
+
+   Two rules that cost a round trip each if missed: the body **cannot start or end with a variable** (Meta rejects it outright), and the language code must be `en` to match what the client sends. Approval takes hours — submit it early.
 
 ## 4b. Razorpay CLI (optional, useful for the demo)
 
