@@ -1,9 +1,11 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { getDb, type RecoveryDb } from "./db";
 import { logAudit } from "./audit";
 import type { Classification } from "./classifier";
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+import {
+  ALLOWED_ACTIONS,
+  resolveDecisionModel,
+  type DecisionModel,
+} from "./decision-model";
 
 /**
  * The agent. Deliberately narrow: it is NEVER asked "what should we do,"
@@ -13,13 +15,11 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
  * wasn't already allowed. What it DOES decide: which channel, what tone,
  * and it must produce a rationale — that rationale is the explainability
  * artifact the submission bar asks for, not a nice-to-have.
+ *
+ * Nothing below is provider-specific. The model sits behind an adapter
+ * (decision-model.ts) so switching providers cannot disturb the fail-closed
+ * paths, which are the only paths here worth testing.
  */
-
-const ALLOWED_ACTIONS = [
-  "send_retry_link_whatsapp",
-  "send_retry_link_email",
-  "escalate_human",
-] as const;
 
 export type AgentAction = (typeof ALLOWED_ACTIONS)[number];
 
@@ -37,16 +37,6 @@ export interface Decision {
   decisionId: string;
 }
 
-const DECISION_SCHEMA = {
-  type: "object",
-  properties: {
-    action: { type: "string", enum: ALLOWED_ACTIONS },
-    rationale: { type: "string" },
-  },
-  required: ["action", "rationale"],
-  additionalProperties: false,
-} as const;
-
 const SYSTEM_PROMPT = `You are a payment-recovery decision agent. You may ONLY choose one action from this fixed list:
 - send_retry_link_whatsapp
 - send_retry_link_email
@@ -55,13 +45,13 @@ const SYSTEM_PROMPT = `You are a payment-recovery decision agent. You may ONLY c
 You are never allowed to invent a new action, change the payment amount, or waive a guardrail. Guardrails have already been checked before you are called — you are only choosing HOW to act, not whether to. Always explain your reasoning in one or two plain sentences, referencing the root cause and retry history.`;
 
 /**
- * Injected so the fail-closed behaviour can be tested without calling the
+ * Injected so the fail-closed behaviour can be tested without calling any
  * API. The interesting paths here are all failure paths — a refusal, a
  * truncated response, an action outside the allowed set — and none of them
- * are reachable by asking the real model nicely.
+ * are reachable by asking a real model nicely.
  */
 export interface DecisionDeps {
-  client: Pick<Anthropic["messages"], "create">;
+  model: DecisionModel;
   db: Pick<RecoveryDb, "insertDecision">;
   audit: typeof logAudit;
 }
@@ -70,7 +60,7 @@ export async function decide(
   input: DecisionInput,
   deps: Partial<DecisionDeps> = {}
 ): Promise<Decision> {
-  const client = deps.client ?? anthropic.messages;
+  const model = deps.model ?? resolveDecisionModel();
   const db = deps.db ?? getDb();
   const audit = deps.audit ?? logAudit;
 
@@ -81,34 +71,23 @@ Prior attempts this event: ${JSON.stringify(input.customerRetryHistory)}
 
 Choose the best action and explain why.`;
 
-  // Thinking is disabled deliberately: this is a bounded 3-way choice on a
-  // webhook's critical path, and adaptive thinking (Sonnet 5's default) would
-  // spend the max_tokens budget on reasoning and truncate the answer.
-  const response = await client.create({
-    model: "claude-sonnet-5",
-    max_tokens: 300,
-    thinking: { type: "disabled" },
-    output_config: {
-      effort: "low",
-      format: { type: "json_schema", schema: DECISION_SCHEMA },
-    },
+  const response = await model.complete({
     system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userPrompt }],
+    user: userPrompt,
+    maxTokens: 300,
   });
-
-  const textBlock = response.content.find((b) => b.type === "text");
 
   // Fail closed: a refusal, a truncated response, or anything outside the
   // schema becomes a human escalation rather than an executed action. The
   // schema makes an out-of-bounds action unreachable in the happy path; this
   // is the guardrail catching everything else.
   let parsed: { action: AgentAction; rationale: string } | null = null;
-  if (response.stop_reason !== "refusal" && textBlock?.type === "text") {
+  if (response.stopReason !== "refusal" && response.text) {
     // JSON.parse was previously unguarded. A max_tokens truncation returns a
     // valid JSON *prefix* that throws here, which would have crashed the
     // webhook on the exact path meant to degrade safely into escalation.
     try {
-      const candidate = JSON.parse(textBlock.text) as {
+      const candidate = JSON.parse(response.text) as {
         action: string;
         rationale: string;
       };
@@ -127,7 +106,7 @@ Choose the best action and explain why.`;
     ? { action: parsed.action, rationale: parsed.rationale, boundedBy: [] as string[] }
     : {
         action: "escalate_human" as AgentAction,
-        rationale: `Agent did not return a usable in-bounds decision (stop_reason=${response.stop_reason}); escalated to human review instead.`,
+        rationale: `Agent did not return a usable in-bounds decision (stop_reason=${response.stopReason}); escalated to human review instead.`,
         boundedBy: ["fixed_action_set"],
       };
 
@@ -142,7 +121,8 @@ Choose the best action and explain why.`;
   if (!parsed) {
     await audit(input.revenueEventId, "stopping_rule_triggered", {
       reason: "agent_returned_unusable_decision",
-      stop_reason: response.stop_reason,
+      stop_reason: response.stopReason,
+      model: model.name,
     });
   }
 
@@ -150,6 +130,7 @@ Choose the best action and explain why.`;
     decision_id: saved.id,
     action: decision.action,
     rationale: decision.rationale,
+    model: model.name,
   });
 
   return { ...decision, decisionId: saved.id };

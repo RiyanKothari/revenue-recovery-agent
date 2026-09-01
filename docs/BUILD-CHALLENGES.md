@@ -344,3 +344,58 @@ Two behaviours were confirmed under real conditions rather than simulated ones:
 
 - **Redelivering the same event resumed it** — the audit log shows *"Resuming an event whose first attempt did not reach a decision"* — and created no duplicate row. That is exactly the half-processed-event bug fixed the day before, reproducing the conditions that cause it: a first attempt that died mid-pipeline.
 - **A tampered signature was rejected with 400** before touching the database.
+
+
+## 2026-09-01 — Switching model provider, without touching the safety paths
+
+**What changed:** The decision engine was written against Claude. The available key turned out to be Gemini.
+
+**Why it mattered:** Everything that makes this agent safe — validating the action against the allowed set, requiring a rationale, degrading anything unusable into a human escalation — lives in `decide()` and is exactly what the eight decision-engine tests cover. A provider rewrite that touched those paths would have invalidated the tests along with the thing they protect.
+
+**Fix:** Put the model behind an adapter (`lib/decision-model.ts`) exposing one `complete()` call. `decide()` became provider-agnostic and its tests kept passing unchanged; only the transport is per-provider. Provider is chosen by which key is present, so the pipeline runs on either.
+
+One detail worth keeping: each adapter normalises its own finish reasons onto a shared vocabulary, so Gemini's `SAFETY` / `RECITATION` / `PROHIBITED_CONTENT` all arrive as `"refusal"` and hit the same fail-closed branch Anthropic's refusals do. Leaking provider-specific strings upward would have quietly disabled that branch for one provider.
+
+## 2026-09-01 — A model that ListModels advertises but will not serve
+
+**What broke:** `gemini-2.5-flash` appears in the models list with `generateContent` among its supported methods, and returns 404 when called: *"no longer available to new users."*
+
+**Fix:** Switched to `gemini-3.6-flash`, pinned explicitly rather than using a `-latest` alias — the model is part of what a measured batch number means, and it should not drift underneath a published result.
+
+**Lesson:** A capability listing is not an entitlement check.
+
+## 2026-09-01 — Gemini 3.x charges thinking against the answer's token budget
+
+**What broke:** Every request returned `400 INVALID_ARGUMENT` with no field named. Bisecting the request body one key at a time found it: `thinkingConfig: { thinkingBudget: 0 }`. Gemini 3.x reasons before answering and cannot be told not to.
+
+**Then a subtler one.** Removing that config made requests succeed but produce garbage. Measured on `gemini-3.6-flash` with the real prompt:
+
+| maxOutputTokens | thinking | answer | result |
+|---|---|---|---|
+| 300 | 285 | 11 | `MAX_TOKENS`, truncated |
+| 1200 | 429 | 46 | `STOP`, valid JSON |
+
+Thinking tokens are charged against the *same* budget as the answer. The 300 the Anthropic path uses left eleven tokens for the response.
+
+**Fix:** The Gemini adapter requests the caller's answer budget plus 1024 tokens of headroom, documented with the measurement.
+
+**Why this was dangerous rather than merely broken:** the fail-closed path handled it perfectly. Truncated JSON fails to parse, so every event became a human escalation. Nothing crashed, nothing errored, and the dashboard would have shown an agent that escalated 100% of cases — reading as *cautious* rather than *broken*. A safety net working correctly can hide a failure indefinitely.
+
+## 2026-09-01 — First full pipeline run against live services
+
+Five `payment.failed` events through the real webhook, on real Postgres, with the real Razorpay MCP server and a real model:
+
+```
+evt_live_4..8 -> {"status":"processed","action":"send_retry_link_whatsapp"}
+```
+
+Recorded: 5 decisions with written rationales, 5 recovery actions, 9 experiment assignments split 8 treated / 1 control. One earlier event returned `holdout_control` and correctly stopped before the agent.
+
+Independently verified through the Razorpay CLI — five payment links exist on Razorpay's side with real `short_url`s, correct amounts, and descriptions carrying the event ids that match the database:
+
+```
+plink_TWmHPITxEDVRtq  created  396000  https://rzp.io/rzp/VxS0YrX7
+   Payment retry — revenue recovery agent (event 6219c2cf-...)
+```
+
+That last check matters more than the status codes: it confirms the Razorpay-side artifact through a different tool and a different credential path than the one that created it.

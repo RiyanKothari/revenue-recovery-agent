@@ -37,7 +37,7 @@ Experiment arm — a holdout slice is deliberately left untreated
         │  control events stop here; the baseline they establish is what
         │  measured lift is computed against
         ▼
-Agent decision (Claude, scoped to 3 pre-approved actions, must produce a rationale)
+Agent decision (Claude or Gemini, scoped to 3 pre-approved actions, must produce a rationale)
         │
         ▼
 Action executor → Razorpay's official MCP server (payment link) + WhatsApp Cloud API

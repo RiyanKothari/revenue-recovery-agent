@@ -5,6 +5,11 @@ This is the "important decisions" section of the pitch, in writing — pull from
 ## Rules-plus-LLM, not pure LLM
 The agent (`lib/decision-engine.ts`) never decides *whether* to act — guardrails (`lib/guardrails.ts`) decide that deterministically, before the LLM is even called. The LLM only chooses *how*, from a fixed set of three actions, and must produce a written rationale. Reasoning: financial actions need to be bounded by code, not by prompting — a hallucinated action should be structurally impossible, not just discouraged. This is what "explainable, bounded, gated" means as an architecture, not a slogan.
 
+## The model sits behind an adapter, so the provider is not a dependency
+`decide()` never talks to a vendor SDK. It calls one `complete()` method on an injected model (`lib/decision-model.ts`), and Anthropic and Gemini are two implementations of it. Reasoning: everything that makes the agent safe lives in `decide()` — the allowed-action check, the required rationale, the fail-closed escalation — and those are precisely the paths under test. A provider swap that reached into them would invalidate the tests and the guarantees together. Switching providers mid-build cost one new file and zero changes to any safety path.
+
+Each adapter also normalises its own finish reasons onto a shared vocabulary, so Gemini's `SAFETY` and `PROHIBITED_CONTENT` arrive as the same `"refusal"` that triggers Anthropic's fail-closed branch. Leaking provider-specific strings upward would have silently disabled that branch for one provider.
+
 ## One tight loop, not five shallow ones
 The brief lists seven example directions. This project builds one — payment failure → root cause → recovery — end to end, with UPI mandate retry as the only stretch goal, chosen because it directly parallels Razorpay's own Sprint 2026 launch rather than being a second unrelated trigger type. Reasoning: a judge evaluating "implementation" and "proof of work" is better served by one loop that provably works than three that don't.
 

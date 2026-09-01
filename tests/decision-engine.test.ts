@@ -24,15 +24,12 @@ const input = {
   customerRetryHistory: [],
 };
 
-function harness(response: {
-  content: { type: string; text?: string }[];
-  stop_reason: string;
-}) {
+function harness(response: { text: string | null; stopReason: string }) {
   const audits: { stage: string; detail: Record<string, unknown> }[] = [];
   const inserted: Record<string, unknown>[] = [];
 
   const deps: Partial<DecisionDeps> = {
-    client: { create: async () => response } as any,
+    model: { name: "fake", complete: async () => response } as any,
     db: {
       async insertDecision(row: Record<string, unknown>) {
         inserted.push(row);
@@ -47,11 +44,8 @@ function harness(response: {
   return { deps, audits, inserted };
 }
 
-function jsonResponse(body: unknown, stop_reason = "end_turn") {
-  return {
-    content: [{ type: "text", text: JSON.stringify(body) }],
-    stop_reason,
-  };
+function jsonResponse(body: unknown, stopReason = "end_turn") {
+  return { text: JSON.stringify(body), stopReason };
 }
 
 test("returns an in-bounds action as the agent chose it", async () => {
@@ -87,10 +81,7 @@ test("escalates when the agent invents an action outside the allowed set", async
 });
 
 test("escalates on a refusal", async () => {
-  const { deps } = harness({
-    content: [{ type: "text", text: "" }],
-    stop_reason: "refusal",
-  });
+  const { deps } = harness({ text: "", stopReason: "refusal" });
 
   const result = await decide(input, deps);
 
@@ -103,10 +94,8 @@ test("escalates on a refusal", async () => {
 // webhook on the exact path meant to degrade into escalation.
 test("escalates instead of throwing when the response is truncated mid-JSON", async () => {
   const { deps } = harness({
-    content: [
-      { type: "text", text: '{"action":"send_retry_link_whatsapp","rationale":"The cus' },
-    ],
-    stop_reason: "max_tokens",
+    text: '{"action":"send_retry_link_whatsapp","rationale":"The cus',
+    stopReason: "max_tokens",
   });
 
   const result = await decide(input, deps);
@@ -117,8 +106,8 @@ test("escalates instead of throwing when the response is truncated mid-JSON", as
 
 test("escalates when the response is not JSON at all", async () => {
   const { deps } = harness({
-    content: [{ type: "text", text: "I think we should send a WhatsApp message." }],
-    stop_reason: "end_turn",
+    text: "I think we should send a WhatsApp message.",
+    stopReason: "end_turn",
   });
 
   const result = await decide(input, deps);
@@ -136,8 +125,8 @@ test("escalates when the rationale is missing", async () => {
   assert.equal(result.action, "escalate_human");
 });
 
-test("escalates when the response carries no text block", async () => {
-  const { deps } = harness({ content: [], stop_reason: "end_turn" });
+test("escalates when the model returns no text at all", async () => {
+  const { deps } = harness({ text: null, stopReason: "end_turn" });
 
   const result = await decide(input, deps);
 
