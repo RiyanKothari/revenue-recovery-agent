@@ -48,6 +48,8 @@ function mask(value: string | undefined): string {
  *   npm run preflight database razorpay      -- just those
  *   npm run preflight --skip anthropic       -- everything else
  */
+const TEMPLATE_NAME = "payment_retry_nudge";
+
 const SERVICES = ["database", "razorpay", "mcp", "anthropic", "whatsapp"] as const;
 type Service = (typeof SERVICES)[number];
 
@@ -351,12 +353,95 @@ async function checkWhatsApp() {
         : "Set WHATSAPP_DRY_RUN=true before seeding — the synthetic batch uses plausible REAL mobile numbers",
   });
 
-  record({
-    name: "template payment_retry_nudge",
-    status: "skip",
-    detail: "cannot be verified from here",
-    fix: "Confirm it is APPROVED in Meta Business Manager → WhatsApp Manager → Message templates",
-  });
+  await checkWhatsAppTemplate(token);
+}
+
+/**
+ * The template is the slowest dependency and the easiest to get subtly
+ * wrong. Approval status is only half of it: lib/whatsapp.ts sends exactly
+ * two body parameters, so a template approved with one or three variables
+ * fails at send time with a Meta error that names a parameter count rather
+ * than the template. Checking the shape here turns that into a clear message
+ * before the demo instead of during it.
+ */
+async function checkWhatsAppTemplate(token: string | undefined) {
+  const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+
+  if (!token || !wabaId) {
+    record({
+      name: "template payment_retry_nudge",
+      status: "skip",
+      detail: "needs WHATSAPP_BUSINESS_ACCOUNT_ID to check",
+      fix: "Set it from the Meta app dashboard, or confirm approval manually in WhatsApp Manager",
+    });
+    return;
+  }
+
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/v20.0/${wabaId}/message_templates?name=${TEMPLATE_NAME}&limit=10`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const body: any = await res.json();
+
+    if (!res.ok) {
+      record({
+        name: "template payment_retry_nudge",
+        status: "fail",
+        detail: body?.error?.message ?? `HTTP ${res.status}`,
+        fix: "Check WHATSAPP_BUSINESS_ACCOUNT_ID is the WhatsApp Business Account id, not the app id",
+      });
+      return;
+    }
+
+    const template = (body?.data ?? []).find((t: any) => t.name === TEMPLATE_NAME);
+
+    if (!template) {
+      record({
+        name: "template payment_retry_nudge",
+        status: "fail",
+        detail: "not found on this business account",
+        fix: "Create it in WhatsApp Manager → Message templates. Approval takes hours — submit it now.",
+      });
+      return;
+    }
+
+    const approved = template.status === "APPROVED";
+    record({
+      name: "template status",
+      status: approved ? "ok" : template.status === "REJECTED" ? "fail" : "warn",
+      detail: `${template.status} (${template.category ?? "no category"}, ${template.language ?? "?"})`,
+      fix: approved
+        ? undefined
+        : template.status === "REJECTED"
+          ? "Rejected — a bare URL in a body variable is the usual cause; a URL button is the alternative"
+          : "Still under review. Sends will fail until it is APPROVED.",
+    });
+
+    // Shape check: the code sends exactly two body parameters.
+    const bodyComponent = (template.components ?? []).find(
+      (c: any) => String(c.type).toUpperCase() === "BODY"
+    );
+    const placeholders = new Set(
+      String(bodyComponent?.text ?? "").match(/\{\{\s*\d+\s*\}\}/g) ?? []
+    );
+
+    record({
+      name: "template variables",
+      status: placeholders.size === 2 ? "ok" : "fail",
+      detail: `${placeholders.size} body variable(s); lib/whatsapp.ts sends 2 (amount, link)`,
+      fix:
+        placeholders.size === 2
+          ? undefined
+          : "Body must contain exactly {{1}} and {{2}}, or the send fails on parameter count",
+    });
+  } catch (err: any) {
+    record({
+      name: "template payment_retry_nudge",
+      status: "fail",
+      detail: err?.message ?? "lookup failed",
+    });
+  }
 }
 
 async function main() {
