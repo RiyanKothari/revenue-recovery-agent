@@ -17,6 +17,8 @@ import Anthropic from "@anthropic-ai/sdk";
 export interface ModelResponse {
   /** The raw JSON text the model produced, or null if it produced none. */
   text: string | null;
+  /** Which model actually answered, when a fallback chain is in play. */
+  model?: string;
   /**
    * Normalised across providers. "refusal" specifically means the model
    * declined — the decision engine treats it as an escalation, so each
@@ -249,6 +251,63 @@ export function withRetry(model: DecisionModel): DecisionModel {
   };
 }
 
+/**
+ * Falls through to the next model when one is exhausted or unavailable.
+ *
+ * Quota on Gemini's free tier is charged per *model* — 20 generate requests
+ * per day each — so a single model cannot carry a batch of any size. This is
+ * the same failover a production deployment runs for a different reason:
+ * when the primary is rate-limited or degraded, serve from the next one
+ * rather than dropping the request.
+ *
+ * The answering model's name is recorded on every decision, so the audit
+ * trail always says which one reasoned.
+ */
+export function withFallback(models: DecisionModel[]): DecisionModel {
+  if (models.length === 0) throw new Error("withFallback needs at least one model");
+
+  return {
+    name: models.map((m) => m.name).join(" | "),
+
+    async complete(params) {
+      let lastError: unknown;
+
+      for (const model of models) {
+        try {
+          const response = await model.complete(params);
+          // Report the model that actually answered, not the chain.
+          return { ...response, model: model.name } as ModelResponse;
+        } catch (err: any) {
+          const message = String(err?.message ?? err);
+          // Exhausted or unavailable — try the next one. A 400 is our bug and
+          // would fail identically everywhere, so it propagates immediately.
+          const shouldFallThrough = /(429|503)|RESOURCE_EXHAUSTED|quota/i.test(message);
+          if (!shouldFallThrough) throw err;
+
+          console.warn(
+            `[decision-model] ${model.name} unavailable (${message.slice(0, 70)}); trying next`
+          );
+          lastError = err;
+        }
+      }
+
+      throw lastError;
+    },
+  };
+}
+
+/**
+ * Gemini free-tier quota is per model, so the chain matters more than any
+ * single entry. Ordered strongest first; the lite variants are more than
+ * capable of a bounded three-way choice.
+ */
+const GEMINI_FALLBACK_CHAIN = [
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-preview",
+];
+
 // --- selection -------------------------------------------------------------
 
 /**
@@ -262,7 +321,10 @@ export function resolveDecisionModel(env = process.env): DecisionModel {
   }
 
   if (env.GEMINI_API_KEY) {
-    return withRetry(createGeminiModel(env.GEMINI_API_KEY, env.DECISION_MODEL));
+    const chain = env.DECISION_MODEL ? [env.DECISION_MODEL] : GEMINI_FALLBACK_CHAIN;
+    return withRetry(
+      withFallback(chain.map((m) => createGeminiModel(env.GEMINI_API_KEY!, m)))
+    );
   }
 
   throw new Error(

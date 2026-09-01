@@ -35,6 +35,7 @@ const TABLES = [
   "customer_consent",
   "audit_log",
   "experiment_assignments",
+  "decision_cache",
 ];
 
 /** Postgres returns timestamptz as a Date; the pipeline speaks ISO strings. */
@@ -117,6 +118,14 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
         [razorpayPaymentId]
       );
       return rows[0]?.id ?? null;
+    },
+
+    async getStoredPayload(revenueEventId) {
+      const rows = await query<{ raw_payload: any }>(
+        "select raw_payload from revenue_events where id = $1 limit 1",
+        [revenueEventId]
+      );
+      return rows[0]?.raw_payload ?? null;
     },
 
     async insertRevenueEvent(row: RevenueEventInsert) {
@@ -228,11 +237,47 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
     async insertDecision(row: DecisionInsert) {
       const rows = await query<{ id: string }>(
         `insert into agent_decisions
-           (revenue_event_id, root_cause, chosen_action, rationale, bounded_by)
-         values ($1,$2,$3,$4,$5) returning id`,
-        [row.revenue_event_id, row.root_cause, row.chosen_action, row.rationale, row.bounded_by]
+           (revenue_event_id, root_cause, chosen_action, rationale, bounded_by, from_cache, cache_key)
+         values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+        [
+          row.revenue_event_id,
+          row.root_cause,
+          row.chosen_action,
+          row.rationale,
+          row.bounded_by,
+          row.from_cache ?? false,
+          row.cache_key ?? null,
+        ]
       );
       return { id: rows[0].id };
+    },
+
+    // --- decision memoisation
+
+    async getCachedDecision(cacheKey) {
+      const rows = await query<any>(
+        "select chosen_action, rationale, model from decision_cache where cache_key = $1",
+        [cacheKey]
+      );
+      return rows[0] ?? null;
+    },
+
+    async putCachedDecision(row) {
+      // Two events with the same situation can race; whichever lands first
+      // wins and the other reuses it. Identical inputs, identical answer.
+      await query(
+        `insert into decision_cache (cache_key, chosen_action, rationale, model)
+         values ($1,$2,$3,$4)
+         on conflict (cache_key) do nothing`,
+        [row.cache_key, row.chosen_action, row.rationale, row.model]
+      );
+    },
+
+    async countCachedDecisions() {
+      const rows = await query<{ count: string }>(
+        "select count(*)::text as count from decision_cache"
+      );
+      return Number(rows[0]?.count ?? 0);
     },
 
     async insertRecoveryAction(row: RecoveryActionInsert) {
@@ -337,7 +382,8 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
 
     async listEvents(): Promise<RevenueEventRow[]> {
       const rows = await query<any>(
-        `select id, customer_id, amount_paise, root_cause, received_at, processed_at
+        `select id, customer_id, amount_paise, root_cause, razorpay_order_id,
+                received_at, processed_at
            from revenue_events`
       );
       return rows.map((r) => ({
@@ -345,6 +391,7 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
         customer_id: r.customer_id,
         amount_paise: Number(r.amount_paise),
         root_cause: r.root_cause,
+        razorpay_order_id: r.razorpay_order_id ?? null,
         received_at: iso(r.received_at),
         processed_at: isoOrNull(r.processed_at),
       }));
@@ -387,12 +434,23 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       );
     },
 
-    async listRecentAudit(limit): Promise<AuditRow[]> {
-      const rows = await query<any>(
-        `select id, revenue_event_id, stage, detail, created_at
-           from audit_log order by created_at desc limit $1`,
-        [limit]
-      );
+    async listRecentAudit(limit, stages): Promise<AuditRow[]> {
+      // Filtering in SQL, not after. The feed shows reasoning, and a batch
+      // writes far more outcome and classification rows than decisions — a
+      // plain "last 100 of everything" window fills with them and the
+      // reasoning panel renders empty while the pipeline is working fine.
+      const rows = stages?.length
+        ? await query<any>(
+            `select id, revenue_event_id, stage, detail, created_at
+               from audit_log where stage = any($1)
+              order by created_at desc limit $2`,
+            [stages, limit]
+          )
+        : await query<any>(
+            `select id, revenue_event_id, stage, detail, created_at
+               from audit_log order by created_at desc limit $1`,
+            [limit]
+          );
       return rows.map((r) => ({
         id: r.id,
         revenue_event_id: r.revenue_event_id,
@@ -420,9 +478,10 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
     // --- conformance
 
     async listDecisions(): Promise<DecisionRow[]> {
-      return query<DecisionRow>(
-        "select id, revenue_event_id, chosen_action, rationale from agent_decisions"
+      const rows = await query<any>(
+        "select id, revenue_event_id, chosen_action, rationale, from_cache from agent_decisions"
       );
+      return rows.map((r) => ({ ...r, from_cache: Boolean(r.from_cache) }));
     },
 
     async listRecoveryActions(): Promise<RecoveryActionRow[]> {

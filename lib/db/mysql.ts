@@ -46,6 +46,7 @@ const TABLES = [
   "customer_consent",
   "audit_log",
   "experiment_assignments",
+  "decision_cache",
 ];
 
 /** MySQL DATETIME comes back as a Date; the pipeline speaks ISO strings. */
@@ -143,6 +144,16 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
         [razorpayPaymentId]
       );
       return rows[0]?.id ?? null;
+    },
+
+    async getStoredPayload(revenueEventId) {
+      const rows = await query<{ raw_payload: any }>(
+        "select raw_payload from revenue_events where id = ? limit 1",
+        [revenueEventId]
+      );
+      const raw = rows[0]?.raw_payload;
+      // mysql2 parses JSON columns already; a string means it did not.
+      return typeof raw === "string" ? JSON.parse(raw) : (raw ?? null);
     },
 
     async insertRevenueEvent(row: RevenueEventInsert) {
@@ -258,8 +269,8 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       const id = randomUUID();
       await exec(
         `insert into agent_decisions
-           (id, revenue_event_id, root_cause, chosen_action, rationale, bounded_by)
-         values (?,?,?,?,?,?)`,
+           (id, revenue_event_id, root_cause, chosen_action, rationale, bounded_by, from_cache, cache_key)
+         values (?,?,?,?,?,?,?,?)`,
         [
           id,
           row.revenue_event_id,
@@ -267,9 +278,39 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           row.chosen_action,
           row.rationale,
           JSON.stringify(row.bounded_by),
+          row.from_cache ? 1 : 0,
+          row.cache_key ?? null,
         ]
       );
       return { id };
+    },
+
+    // --- decision memoisation
+
+    async getCachedDecision(cacheKey) {
+      const rows = await query<any>(
+        "select chosen_action, rationale, model from decision_cache where cache_key = ?",
+        [cacheKey]
+      );
+      return rows[0] ?? null;
+    },
+
+    async putCachedDecision(row) {
+      // Two events with the same situation can race; whichever lands first
+      // wins and the other reuses it. Identical inputs, identical answer.
+      await exec(
+        `insert into decision_cache (cache_key, chosen_action, rationale, model)
+         values (?,?,?,?)
+         on duplicate key update cache_key = cache_key`,
+        [row.cache_key, row.chosen_action, row.rationale, row.model]
+      );
+    },
+
+    async countCachedDecisions() {
+      const rows = await query<{ count: number }>(
+        "select count(*) as count from decision_cache"
+      );
+      return Number(rows[0]?.count ?? 0);
     },
 
     async insertRecoveryAction(row: RecoveryActionInsert) {
@@ -387,7 +428,8 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
     async listEvents(): Promise<RevenueEventRow[]> {
       const rows = await query<any>(
-        `select id, customer_id, amount_paise, root_cause, received_at, processed_at
+        `select id, customer_id, amount_paise, root_cause, razorpay_order_id,
+                received_at, processed_at
            from revenue_events`
       );
       return rows.map((r) => ({
@@ -395,6 +437,7 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
         customer_id: r.customer_id,
         amount_paise: Number(r.amount_paise),
         root_cause: r.root_cause,
+        razorpay_order_id: r.razorpay_order_id ?? null,
         received_at: iso(r.received_at),
         processed_at: isoOrNull(r.processed_at),
       }));
@@ -438,12 +481,21 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       );
     },
 
-    async listRecentAudit(limit): Promise<AuditRow[]> {
-      const rows = await query<any>(
-        `select id, revenue_event_id, stage, detail, created_at
-           from audit_log order by created_at desc limit ?`,
-        [limit]
-      );
+    async listRecentAudit(limit, stages): Promise<AuditRow[]> {
+      // See the Postgres implementation: filtering after the fact lets a
+      // batch's outcome rows crowd the reasoning out of the feed.
+      const rows = stages?.length
+        ? await query<any>(
+            `select id, revenue_event_id, stage, detail, created_at
+               from audit_log where stage in (${stages.map(() => "?").join(",")})
+              order by created_at desc limit ?`,
+            [...stages, limit]
+          )
+        : await query<any>(
+            `select id, revenue_event_id, stage, detail, created_at
+               from audit_log order by created_at desc limit ?`,
+            [limit]
+          );
       return rows.map((r) => ({
         id: r.id,
         revenue_event_id: r.revenue_event_id,
@@ -473,9 +525,10 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
     // --- conformance
 
     async listDecisions(): Promise<DecisionRow[]> {
-      return query<DecisionRow>(
-        "select id, revenue_event_id, chosen_action, rationale from agent_decisions"
+      const rows = await query<any>(
+        "select id, revenue_event_id, chosen_action, rationale, from_cache from agent_decisions"
       );
+      return rows.map((r) => ({ ...r, from_cache: bool(r.from_cache) }));
     },
 
     async listRecoveryActions(): Promise<RecoveryActionRow[]> {

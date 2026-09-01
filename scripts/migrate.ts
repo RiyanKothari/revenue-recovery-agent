@@ -20,6 +20,7 @@ loadEnv();
 /** MySQL cannot say `create index if not exists`, so re-runs hit these. */
 const MYSQL_ALREADY_EXISTS = new Set([
   1050, // ER_TABLE_EXISTS_ERROR
+  1060, // ER_DUP_FIELDNAME — a column this migration adds is already there
   1061, // ER_DUP_KEYNAME
   1826, // ER_FK_DUP_NAME
 ]);

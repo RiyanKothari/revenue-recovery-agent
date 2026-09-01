@@ -18,7 +18,9 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const db = getDb();
-    const logs = await db.listRecentAudit(100);
+    // Only the stages the feed renders. Asking for "the last 100 rows" and
+    // filtering client-side meant a finished batch showed an empty feed.
+    const logs = await db.listRecentAudit(60, ["agent_decided", "action_executed"]);
 
     const eventIds = [...new Set(logs.map((l) => l.revenue_event_id))];
     const events = await db.listEventsByIds(eventIds);

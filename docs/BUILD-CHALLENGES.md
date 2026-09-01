@@ -450,3 +450,52 @@ Twenty generate requests per day, per model, per project. The five live events a
 ```
 
 Those first two were structurally unreachable until the synthetic batch was fixed earlier the same day to reuse customers and seed consent rows. Before that, a batch could not have tripped either rule.
+
+
+## 2026-09-01 — Decision memoisation, and why it is not a shortcut
+
+**The problem:** the Gemini free tier allows 20 model calls per day. A 400-event batch needs hundreds. Volume was blocked by quota, not code.
+
+**The observation:** across 400 failures there are only a few dozen *distinct decision situations* — root cause, payment method, amount band, prior attempts. That is the whole question the agent is asked. At temperature 0 the answer for a given situation is identical every time. Calling a model 400 times for 22 distinct situations is something no production system would do.
+
+**Result:** 32 model calls served 262 decisions across 409 events. 88% of decisions were reused.
+
+**What makes it honest rather than a cheat**, and both properties are tested:
+
+1. **The cache key and the prompt come from the same function.** The model is shown the amount *band*, not the rupee figure, so two events sharing a key are genuinely indistinguishable to the agent and a rationale written for one is true of the other. If the prompt could carry something the key did not, a cached rationale could describe a situation that was not this event's.
+2. **Reuse is recorded, never implied away.** Every decision row carries `from_cache` and the key it matched, the audit entry says so, and the dashboard marks those feed rows `reused`. The trail never claims more reasoning than happened.
+
+Failures are deliberately not cached. Memoising an escalation caused by a truncated response would turn one transient blip into a permanent wrong answer for that entire situation.
+
+**Also added:** a model fallback chain. Gemini quota is charged per model, so the pipeline falls through to the next model on 429/503 — the same failover a production deployment runs when its primary is rate-limited.
+
+## 2026-09-01 — The conformance verifier caught a real DND violation
+
+**What broke:** After the 400-event run the dashboard showed **38 violations** — three events where a customer with DND set had been contacted, and 35 cooldown breaches.
+
+**Why:** The resume path trusted the incoming payload instead of the stored event.
+
+The synthetic batch generates deterministic event ids (`evt_synthetic_1150`) but randomised payloads, and `customerIndexFor` maps an index to a different customer at a different batch size. So the same event id arrived as customer 0 in a 200-event run and customer 150 in a 400-event run.
+
+The audit trail shows it exactly:
+
+```
+13:00:07  classified               gateway_error
+13:00:07  stopping_rule_triggered  customer_dnd_opt_out     <- correctly blocked
+14:27:22  event_received           "Resuming an event..."
+14:27:22  classified               insufficient_funds       <- different payload!
+14:27:22  agent_decided
+14:27:22  action_executed          whatsapp                 <- contacted a DND customer
+```
+
+The guardrails evaluated customer 150's consent while the action was recorded against customer 0. The consent rule was never bypassed — it was asked about the wrong person.
+
+**Fix:** a resumed delivery is now processed against `raw_payload` from the stored row, not the body that arrived with the retry. The row is the authority for what an event is; a retry carrying the same id proves nothing about its contents.
+
+**Why this entry matters more than the fix:** nothing else in the system could have caught this. The pipeline reported success, the dashboard showed healthy numbers, and every individual component behaved correctly. Only an independent check that re-derives the safety properties from recorded data — deliberately sharing no code with the enforcement path — could see that the rule had been applied to the wrong customer. That is the argument for building it, demonstrated rather than asserted.
+
+## 2026-09-01 — Two smaller bugs from the same run
+
+**The reasoning feed rendered empty on a finished batch.** It fetched "the last 100 audit rows" and filtered for decision stages client-side. A completed batch writes far more classification and outcome rows than decisions, so the window filled with them and the panel showed its empty state while 262 decisions sat in the database. Stage filtering moved into the query.
+
+**The MCP client threw on progress text.** `parseToolResult` assumed `content[0]` was the payload, but Razorpay's server interleaves progress messages — `Unexpected token 'c', "creating p"... is not valid JSON`. The action was recorded as failed even though the payment link had been created. It now takes the first content block that actually parses as JSON.

@@ -109,6 +109,19 @@ export async function GET() {
 
   const lift = computeLift(arms.treated, arms.control);
 
+  /**
+   * Whether this batch is synthetic, so the dashboard can say so.
+   *
+   * Synthetic recoveries are generated from a stated assumption (see
+   * scripts/generate-synthetic-batch.ts), which means the lift below measures
+   * an effect the batch was told to have. That is a legitimate demonstration
+   * of the measurement machinery and an illegitimate claim about the agent —
+   * the difference has to be visible on screen, not buried in a README.
+   */
+  const syntheticEvents = events.filter((e) =>
+    (e.razorpay_order_id ?? "").startsWith("order_synthetic_")
+  ).length;
+
   return NextResponse.json({
     total_events: events.length,
     total_at_risk_paise: totalAtRiskPaise,
@@ -121,6 +134,8 @@ export async function GET() {
     by_root_cause: byRootCause,
     avg_time_to_recovery_minutes: avgTimeToRecoveryMinutes,
     timed_recoveries: durationsMinutes.length,
+
+    synthetic_events: syntheticEvents,
 
     // Measured causal impact, not attribution.
     experiment: {

@@ -35,6 +35,7 @@ interface BatchSummary {
   by_root_cause: Record<string, { count: number; amount_paise: number }>;
   avg_time_to_recovery_minutes: number | null;
   timed_recoveries: number;
+  synthetic_events: number;
   exceptions: { revenue_event_id: string; reason: string }[];
   experiment: {
     policy_version: string;
@@ -338,6 +339,13 @@ export default function DashboardPage() {
 
       {/* --- Measured lift. Everything above is attribution; this is the
           only number on the page that establishes causation. --- */}
+      {summary && summary.synthetic_events > 0 && (
+        <SyntheticNotice
+          syntheticEvents={summary.synthetic_events}
+          totalEvents={summary.total_events}
+        />
+      )}
+
       {summary && <LiftPanel experiment={summary.experiment} />}
 
       {/* --- Machine-checked safety proof. The guardrails enforce; this
@@ -677,6 +685,37 @@ function ConformancePanel({ data }: { data: Conformance }) {
   );
 }
 
+/**
+ * Says out loud when the numbers below come from a synthetic batch.
+ *
+ * The recoveries in a seeded batch are generated from a stated assumption, so
+ * the lift measures an effect the batch was told to have. The measurement
+ * machinery is real and the arithmetic is real; the underlying customer
+ * behaviour is not. Anyone reading this screen has to be able to tell the
+ * difference at a glance — burying it in a README would make every number
+ * here quietly misleading.
+ */
+function SyntheticNotice({
+  syntheticEvents,
+  totalEvents,
+}: {
+  syntheticEvents: number;
+  totalEvents: number;
+}) {
+  return (
+    <Card marginBottom="spacing.5">
+      <CardBody>
+        <Box display="flex" alignItems="center" gap="spacing.4" flexWrap="wrap">
+          <Badge color="notice">Synthetic batch</Badge>
+          <Text size="small" color="surface.text.gray.muted">
+            {`${syntheticEvents} of ${totalEvents} events are seeded. Recoveries are simulated from a stated assumption, so the lift below demonstrates the measurement working — it is not evidence about real customers.`}
+          </Text>
+        </Box>
+      </CardBody>
+    </Card>
+  );
+}
+
 function StatusPill({ status }: { status: FeedStatus }) {
   const config = {
     live: { color: "positive" as const, text: "Live", dot: "#00A868" },
@@ -713,6 +752,11 @@ function FeedEntry({ row }: { row: AuditRow }) {
   // the action — worth surfacing rather than leaving in the audit log.
   const paymentLinkId = detail?.payment_link_id as string | undefined;
 
+  // Reused reasoning is labelled rather than passed off as fresh. The
+  // rationale is identical because the situation is identical, but the feed
+  // should never imply the agent thought about this event from scratch.
+  const fromCache = detail?.from_cache === true;
+
   return (
     <div className="rr-feed-row">
       <Card>
@@ -724,9 +768,12 @@ function FeedEntry({ row }: { row: AuditRow }) {
             gap="spacing.3"
             marginBottom="spacing.2"
           >
-            <Badge color={failed ? "negative" : executed ? "positive" : "information"}>
-              {failed ? `${actionText} — delivery failed` : actionText}
-            </Badge>
+            <Box display="flex" alignItems="center" gap="spacing.2">
+              <Badge color={failed ? "negative" : executed ? "positive" : "information"}>
+                {failed ? `${actionText} — delivery failed` : actionText}
+              </Badge>
+              {fromCache && <Badge color="neutral">reused</Badge>}
+            </Box>
             <span className="rr-mono">
               <Text size="small" color="surface.text.gray.muted">
                 {new Date(row.created_at).toLocaleTimeString("en-IN", { hour12: false })}

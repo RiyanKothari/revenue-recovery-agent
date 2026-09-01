@@ -42,6 +42,8 @@ export interface RevenueEventRow {
   customer_id: string | null;
   amount_paise: number;
   root_cause: string | null;
+  /** Needed to attribute a recovery back to the failure it belongs to. */
+  razorpay_order_id: string | null;
   received_at: string;
   processed_at: string | null;
 }
@@ -52,7 +54,15 @@ export interface DecisionInsert {
   chosen_action: string;
   rationale: string;
   bounded_by: string[];
-  policy_version?: string;
+  /** True when reused from decision_cache rather than reasoned fresh. */
+  from_cache?: boolean;
+  cache_key?: string | null;
+}
+
+export interface CachedDecision {
+  chosen_action: string;
+  rationale: string;
+  model: string;
 }
 
 export interface DecisionRow {
@@ -60,6 +70,7 @@ export interface DecisionRow {
   revenue_event_id: string;
   chosen_action: string;
   rationale: string | null;
+  from_cache?: boolean;
 }
 
 export interface RecoveryActionInsert {
@@ -127,6 +138,12 @@ export interface RecoveryDb {
   findEventIdByRazorpayEventId(razorpayEventId: string): Promise<string | null>;
   /** Maps a refund/dispute webhook back to the failure it relates to. */
   findEventIdByPaymentId(razorpayPaymentId: string): Promise<string | null>;
+  /**
+   * The payload this event was created from. A resumed delivery must be
+   * processed against the payload that produced the row, not whatever arrives
+   * with the retry — see the resume path in the webhook.
+   */
+  getStoredPayload(revenueEventId: string): Promise<any | null>;
   insertRevenueEvent(row: RevenueEventInsert): Promise<InsertResult>;
   setClassification(eventId: string, rootCause: string, processedAt: string): Promise<void>;
 
@@ -155,6 +172,11 @@ export interface RecoveryDb {
   countDecisionsByRootCause(rootCause: string): Promise<number>;
   countRecoveredByRootCause(rootCause: string): Promise<number>;
 
+  // --- decision memoisation
+  getCachedDecision(cacheKey: string): Promise<CachedDecision | null>;
+  putCachedDecision(row: CachedDecision & { cache_key: string }): Promise<void>;
+  countCachedDecisions(): Promise<number>;
+
   // --- experiment
   insertAssignment(row: AssignmentInsert): Promise<InsertResult>;
 
@@ -177,7 +199,7 @@ export interface RecoveryDb {
   listStoppingRules(): Promise<{ revenue_event_id: string; reason: string }[]>;
   listDecisionEventIds(): Promise<string[]>;
   listAssignments(): Promise<{ revenue_event_id: string; arm: string }[]>;
-  listRecentAudit(limit: number): Promise<AuditRow[]>;
+  listRecentAudit(limit: number, stages?: string[]): Promise<AuditRow[]>;
   listEventsByIds(ids: string[]): Promise<
     { id: string; amount_paise: number; root_cause: string | null; customer_id: string | null }[]
   >;

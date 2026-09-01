@@ -6,6 +6,7 @@ import {
   resolveDecisionModel,
   type DecisionModel,
 } from "./decision-model";
+import { decisionContextKey, decisionPrompt } from "./decision-cache";
 
 /**
  * The agent. Deliberately narrow: it is NEVER asked "what should we do,"
@@ -52,8 +53,11 @@ You are never allowed to invent a new action, change the payment amount, or waiv
  */
 export interface DecisionDeps {
   model: DecisionModel;
-  db: Pick<RecoveryDb, "insertDecision">;
+  db: Pick<RecoveryDb, "insertDecision" | "getCachedDecision" | "putCachedDecision">;
   audit: typeof logAudit;
+  /** Set false to force a fresh model call — used when comparing cached
+   *  answers against live ones. */
+  useCache: boolean;
 }
 
 export async function decide(
@@ -63,13 +67,53 @@ export async function decide(
   const model = deps.model ?? resolveDecisionModel();
   const db = deps.db ?? getDb();
   const audit = deps.audit ?? logAudit;
+  const useCache = deps.useCache ?? true;
 
-  const userPrompt = `Root cause: ${input.classification.root_cause}
-Payment method: ${input.classification.payment_method}
-Amount at risk: ₹${(input.amountPaise / 100).toFixed(2)}
-Prior attempts this event: ${JSON.stringify(input.customerRetryHistory)}
+  // The prompt and the cache key come from the same inputs, so a cached
+  // rationale is always true of the event reusing it. See decision-cache.ts.
+  const cacheKey = decisionContextKey(input);
+  const userPrompt = decisionPrompt(input);
 
-Choose the best action and explain why.`;
+  /**
+   * A previously reasoned answer to this exact situation.
+   *
+   * This is what makes a batch of hundreds affordable: across 800 failures
+   * there are only a few dozen distinct decision contexts, and at temperature
+   * 0 the model returns the same answer for each. Reuse is recorded on the
+   * decision row and in the audit trail, so the trail never implies more
+   * reasoning than happened.
+   */
+  const cached = useCache && db.getCachedDecision
+    ? await db.getCachedDecision(cacheKey).catch(() => null)
+    : null;
+
+  if (cached) {
+    const saved = await db.insertDecision({
+      revenue_event_id: input.revenueEventId,
+      root_cause: input.classification.root_cause,
+      chosen_action: cached.chosen_action,
+      rationale: cached.rationale,
+      bounded_by: [],
+      from_cache: true,
+      cache_key: cacheKey,
+    });
+
+    await audit(input.revenueEventId, "agent_decided", {
+      decision_id: saved.id,
+      action: cached.chosen_action,
+      rationale: cached.rationale,
+      model: cached.model,
+      from_cache: true,
+      cache_key: cacheKey,
+    });
+
+    return {
+      action: cached.chosen_action as AgentAction,
+      rationale: cached.rationale,
+      boundedBy: [],
+      decisionId: saved.id,
+    };
+  }
 
   const response = await model.complete({
     system: SYSTEM_PROMPT,
@@ -116,7 +160,23 @@ Choose the best action and explain why.`;
     chosen_action: decision.action,
     rationale: decision.rationale,
     bounded_by: decision.boundedBy,
+    from_cache: false,
+    cache_key: cacheKey,
   });
+
+  // Only successful, in-bounds decisions are memoised. Caching an escalation
+  // caused by a truncated response or a provider blip would turn one
+  // transient failure into a permanent one for that whole situation.
+  if (parsed && useCache && db.putCachedDecision) {
+    await db
+      .putCachedDecision({
+        cache_key: cacheKey,
+        chosen_action: decision.action,
+        rationale: decision.rationale,
+        model: model.name,
+      })
+      .catch((err) => console.error("[decision-cache] write failed:", err?.message ?? err));
+  }
 
   if (!parsed) {
     await audit(input.revenueEventId, "stopping_rule_triggered", {
@@ -131,6 +191,8 @@ Choose the best action and explain why.`;
     action: decision.action,
     rationale: decision.rationale,
     model: model.name,
+    from_cache: false,
+    cache_key: cacheKey,
   });
 
   return { ...decision, decisionId: saved.id };

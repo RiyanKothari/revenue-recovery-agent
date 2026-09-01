@@ -141,7 +141,7 @@ async function checkDatabase() {
       status: missing.length === 0 ? "ok" : "fail",
       detail:
         missing.length === 0
-          ? "all 7 tables present"
+          ? "all expected tables present"
           : `missing: ${missing.join(", ")}`,
       fix:
         missing.length === 0

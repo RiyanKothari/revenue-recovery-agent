@@ -100,9 +100,32 @@ export async function fetchPaymentStatus(paymentId: string): Promise<string> {
 }
 
 function parseToolResult(result: unknown): any {
-  // MCP tool results come back as content blocks; the Razorpay server
-  // returns JSON text in the first block.
-  const content = (result as any)?.content?.[0]?.text;
-  if (!content) throw new Error("Unexpected empty MCP tool result");
-  return JSON.parse(content);
+  /**
+   * MCP tool results are a list of content blocks, and the first is not
+   * reliably the payload — the Razorpay server interleaves progress text
+   * ("creating payment link..."), which made a naive `JSON.parse(content[0])`
+   * throw mid-batch and record the action as failed despite the link being
+   * created. Take the first block that actually parses.
+   */
+  const blocks = (result as any)?.content;
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    throw new Error("Unexpected empty MCP tool result");
+  }
+
+  for (const block of blocks) {
+    const text = block?.text;
+    if (typeof text !== "string") continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      continue; // progress chatter, not the payload
+    }
+  }
+
+  const preview = blocks
+    .map((b: any) => String(b?.text ?? ""))
+    .join(" ")
+    .slice(0, 120);
+  throw new Error(`No JSON payload in MCP tool result (got: ${preview})`);
 }

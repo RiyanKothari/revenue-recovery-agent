@@ -33,6 +33,8 @@ create table if not exists agent_decisions (
   chosen_action text not null,                        -- 'send_retry_link_whatsapp' | 'send_retry_link_email' | 'escalate_human' | 'no_action_within_cooldown'
   rationale text not null,                             -- the agent's written reasoning — this is the explainability artifact
   bounded_by text[] not null default '{}',             -- which guardrails constrained this decision, e.g. {'max_retries','cooldown'}
+  from_cache boolean not null default false,           -- true when reused from decision_cache rather than reasoned fresh
+  cache_key text,                                      -- the situation this decision answers
   model text not null default 'claude',
   decided_at timestamptz not null default now()
 );
@@ -85,6 +87,26 @@ create table if not exists audit_log (
   created_at timestamptz not null default now()
 );
 
+-- Memoised agent decisions, keyed on the SITUATION rather than the event.
+--
+-- Across a batch of failures there are only a few dozen distinct decision
+-- contexts (root cause x method x amount band x prior attempts). Calling a
+-- model once per event for thirty distinct situations is pure cost and
+-- latency for an identical answer, since the call runs at temperature 0.
+--
+-- The key is derived from exactly the same inputs as the prompt (see
+-- lib/decision-cache.ts), so two events sharing a key are indistinguishable
+-- to the agent and a rationale written for one is true of the other. Every
+-- reuse is recorded on agent_decisions.from_cache, so the audit trail never
+-- implies more reasoning than actually happened.
+create table if not exists decision_cache (
+  cache_key text primary key,
+  chosen_action text not null,
+  rationale text not null,
+  model text not null,
+  created_at timestamptz not null default now()
+);
+
 -- Experiment assignment. A slice of otherwise-eligible events is deliberately
 -- left untreated so recovery can be MEASURED against a do-nothing baseline
 -- rather than merely attributed. Kept in its own table, not as a column on
@@ -113,3 +135,12 @@ create index if not exists idx_revenue_events_customer on revenue_events(custome
 create index if not exists idx_agent_decisions_event on agent_decisions(revenue_event_id);
 create index if not exists idx_recovery_actions_decision on recovery_actions(agent_decision_id);
 create index if not exists idx_audit_log_event on audit_log(revenue_event_id, created_at);
+
+-- Schema evolution.
+--
+-- `create table if not exists` does nothing to a table that already exists,
+-- so columns added after the first migration need explicit ALTERs. These are
+-- idempotent and safe to re-run: a fresh database gets them from the CREATE
+-- above and skips these; an existing one picks them up here.
+alter table agent_decisions add column if not exists from_cache boolean not null default false;
+alter table agent_decisions add column if not exists cache_key text;

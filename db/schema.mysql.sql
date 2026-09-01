@@ -45,6 +45,8 @@ create table if not exists agent_decisions (
   chosen_action varchar(64) not null,
   rationale text not null,                          -- the explainability artifact
   bounded_by json not null,
+  from_cache tinyint(1) not null default 0,
+  cache_key varchar(191),
   model varchar(64) not null default 'claude',
   decided_at datetime(3) not null default current_timestamp(3),
   constraint fk_decision_event foreign key (revenue_event_id) references revenue_events(id)
@@ -101,6 +103,17 @@ create table if not exists audit_log (
   constraint fk_audit_event foreign key (revenue_event_id) references revenue_events(id)
 ) engine=InnoDB;
 
+-- Memoised agent decisions, keyed on the situation rather than the event.
+-- See db/schema.postgres.sql for the full rationale; every reuse is recorded
+-- on agent_decisions.from_cache so the audit trail stays honest.
+create table if not exists decision_cache (
+  cache_key varchar(191) primary key,
+  chosen_action varchar(64) not null,
+  rationale text not null,
+  model varchar(128) not null,
+  created_at datetime(3) not null default current_timestamp(3)
+) engine=InnoDB;
+
 -- A slice of otherwise-eligible events is deliberately left untreated so
 -- recovery can be MEASURED against a do-nothing baseline rather than merely
 -- attributed. Assignment is a pure function of revenue_event_id (see
@@ -127,3 +140,9 @@ create index idx_recovery_actions_executed on recovery_actions(executed_at);
 create index idx_audit_log_event on audit_log(revenue_event_id, created_at);
 create index idx_audit_log_stage on audit_log(stage);
 create index idx_experiment_assignments_arm on experiment_assignments(arm);
+
+-- Schema evolution. MySQL has no `add column if not exists`, so these are
+-- written plainly and the migrator tolerates ER_DUP_FIELDNAME (1060) on
+-- re-runs — see scripts/migrate.ts.
+alter table agent_decisions add column from_cache tinyint(1) not null default 0;
+alter table agent_decisions add column cache_key varchar(191);

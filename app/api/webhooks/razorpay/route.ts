@@ -149,12 +149,40 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "duplicate_ignored" });
     }
 
+    /**
+     * Resume against the payload that CREATED the row, not the one that just
+     * arrived.
+     *
+     * Both carry the same event id, but nothing guarantees they carry the
+     * same content — a replayed batch can reuse an event id with a different
+     * body. Processing the stored row's id against a fresh payload evaluates
+     * the guardrails on one customer and records the action against another.
+     *
+     * That is not hypothetical: a synthetic batch replayed `evt_synthetic_1150`
+     * with a different customer, the consent check passed for the new one, and
+     * the resulting WhatsApp message was recorded against the original — a
+     * customer with DND set. The conformance verifier caught it as an I1
+     * violation. The stored row is the authority for what an event is.
+     */
+    const storedPayload = await db.getStoredPayload(existingId);
+    const storedEntity = storedPayload?.payload?.payment?.entity;
+
+    if (!storedEntity) {
+      await logAudit(existingId, "stopping_rule_triggered", {
+        reason: "stored_payload_unreadable",
+        detail: "Cannot resume without the payload that created this event.",
+      });
+      return NextResponse.json({ error: "stored_payload_unreadable" }, { status: 500 });
+    }
+
     await logAudit(existingId, "event_received", {
       razorpay_event_id: razorpayEventId,
       note: "Resuming an event whose first attempt did not reach a decision.",
     });
 
-    return guarded(existingId, () => processEvent({ eventId: existingId, paymentEntity }));
+    return guarded(existingId, () =>
+      processEvent({ eventId: existingId, paymentEntity: storedEntity })
+    );
   }
 
   let inserted;

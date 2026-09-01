@@ -134,6 +134,98 @@ async function seedConsent(size: number) {
   );
 }
 
+/**
+ * Synthetic customers do not pay. Something has to.
+ *
+ * Without `order.paid` events the outcomes table stays empty, both arms show
+ * zero conversions, and the measured-lift panel — the centrepiece — has
+ * nothing to measure. So the batch drives the real attribution path with
+ * simulated recoveries.
+ *
+ * These two numbers are ASSUMPTIONS, not findings. They are the effect this
+ * batch pretends the agent has; the pipeline then measures it back out
+ * through the same holdout arithmetic real traffic would use. That is the
+ * honest claim available here — the measurement machinery is exercised end to
+ * end, and on real traffic the same panel reports the real effect.
+ *
+ * Nothing downstream is told which arm an event is in: the recovery arrives
+ * as an ordinary signed webhook and attribution works it out, exactly as in
+ * production.
+ */
+const ASSUMED_TREATED_CONVERSION = 0.34;
+const ASSUMED_CONTROL_CONVERSION = 0.19;
+
+async function simulateOutcomes() {
+  if (process.env.SIMULATE_OUTCOMES === "false") {
+    console.log("\nSkipping simulated recoveries (SIMULATE_OUTCOMES=false).");
+    return;
+  }
+
+  const { getDb } = await import("../lib/db");
+  const crypto = await import("crypto");
+  const db = getDb();
+
+  const webhookUrl =
+    process.env.WEBHOOK_URL ?? "http://localhost:3000/api/webhooks/razorpay";
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET!;
+
+  const [events, assignments] = await Promise.all([db.listEvents(), db.listAssignments()]);
+  const armByEvent = new Map(assignments.map((a) => [a.revenue_event_id, a.arm]));
+
+  // Only events that actually entered the experiment can convert. Inventing
+  // recoveries for blocked or ineligible events would corrupt both the
+  // numerator and the denominator of the lift.
+  const eligible = events.filter((e) => armByEvent.has(e.id));
+
+  let sent = 0;
+  for (const event of eligible) {
+    const arm = armByEvent.get(event.id);
+    const rate =
+      arm === "control" ? ASSUMED_CONTROL_CONVERSION : ASSUMED_TREATED_CONVERSION;
+    if (Math.random() >= rate) continue;
+
+    const orderId = event.razorpay_order_id;
+    if (!orderId) continue;
+
+    const body = JSON.stringify({
+      event: "order.paid",
+      payload: {
+        payment: {
+          entity: {
+            id: `pay_recovered_${event.id.slice(0, 8)}`,
+            order_id: orderId,
+            amount: event.amount_paise,
+            currency: "INR",
+          },
+        },
+      },
+    });
+
+    const signature = crypto.createHmac("sha256", secret).update(body).digest("hex");
+    try {
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-razorpay-signature": signature,
+          "x-razorpay-event-id": `evt_paid_${event.id.slice(0, 12)}`,
+        },
+        body,
+      });
+      sent += 1;
+    } catch {
+      // A dropped recovery is one fewer conversion; the batch continues.
+    }
+  }
+
+  await db.close();
+  console.log(
+    `\nSimulated ${sent} recoveries across ${eligible.length} enrolled events ` +
+      `(assumed ${Math.round(ASSUMED_TREATED_CONVERSION * 100)}% treated / ` +
+      `${Math.round(ASSUMED_CONTROL_CONVERSION * 100)}% control — an assumption, not a finding).`
+  );
+}
+
 async function main() {
   // Next loads .env.local for the app; a standalone tsx script does not.
   const { loadEnv } = await import("./load-env");
@@ -225,6 +317,8 @@ async function main() {
 
     await new Promise((r) => setTimeout(r, pacingMs)); // gentle pacing, not a stress test
   }
+
+  await simulateOutcomes();
 
   console.log("\nOutcome by pipeline status:");
   for (const [status, count] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
