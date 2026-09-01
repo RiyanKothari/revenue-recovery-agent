@@ -31,13 +31,9 @@ function harness(overrides: {
 
   const deps: Partial<ExecutorDeps> = {
     db: {
-      from() {
-        return {
-          insert(row: Record<string, unknown>) {
-            recorded.inserts.push(row);
-            return Promise.resolve({ error: overrides.insertError ?? null });
-          },
-        };
+      async insertRecoveryAction(row: Record<string, unknown>) {
+        recorded.inserts.push(row);
+        if (overrides.insertError) throw new Error(overrides.insertError.message);
       },
     } as any,
     createLink:

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import { computeLift, type ArmOutcome } from "@/lib/experiment";
 import { DEFAULT_POLICY } from "@/lib/policy";
 
@@ -19,41 +19,24 @@ export const dynamic = "force-dynamic";
  * than failure.
  */
 export async function GET() {
-  const [eventsRes, outcomesRes, exceptionsRes, decisionsRes, assignmentsRes] =
-    await Promise.all([
-    supabase
-      .from("revenue_events")
-      .select("id, amount_paise, root_cause, received_at, processed_at"),
-    supabase
-      .from("outcomes")
-      .select("revenue_event_id, recovered, recovered_amount_paise, resolved_at"),
-    supabase
-      .from("audit_log")
-      .select("revenue_event_id, detail")
-      .eq("stage", "stopping_rule_triggered"),
-    // Events the agent actually acted on, for an attempted-only rate.
-    supabase.from("agent_decisions").select("revenue_event_id"),
-      supabase.from("experiment_assignments").select("revenue_event_id, arm"),
+  let events, outcomes, auditExceptions, decisionEventIds, assignments;
+
+  try {
+    const db = getDb();
+    [events, outcomes, auditExceptions, decisionEventIds, assignments] = await Promise.all([
+      db.listEvents(),
+      db.listOutcomes(),
+      db.listStoppingRules(),
+      // Events the agent actually acted on, for an attempted-only rate.
+      db.listDecisionEventIds(),
+      db.listAssignments(),
     ]);
-
-  const failed =
-    eventsRes.error ??
-    outcomesRes.error ??
-    exceptionsRes.error ??
-    decisionsRes.error ??
-    assignmentsRes.error;
-
-  if (failed) {
+  } catch (err: any) {
     return NextResponse.json(
-      { error: "summary_query_failed", detail: failed.message },
+      { error: "summary_query_failed", detail: err?.message ?? "unknown" },
       { status: 500 }
     );
   }
-
-  const events = eventsRes.data ?? [];
-  const outcomes = outcomesRes.data ?? [];
-  const auditExceptions = exceptionsRes.data ?? [];
-  const decisions = decisionsRes.data ?? [];
 
   const totalAtRiskPaise = events.reduce((s, e) => s + e.amount_paise, 0);
   const recoveredEvents = outcomes.filter((o) => o.recovered);
@@ -91,7 +74,7 @@ export async function GET() {
   // the business number (of everything that failed, how much came back). The
   // attempted rate is the agent's number, excluding events it deliberately
   // never touched — unknown root causes routed straight to human review.
-  const attemptedEventIds = new Set(decisions.map((d) => d.revenue_event_id));
+  const attemptedEventIds = new Set(decisionEventIds);
   const recoveredAttempted = recoveredEvents.filter((o) =>
     attemptedEventIds.has(o.revenue_event_id)
   ).length;
@@ -103,7 +86,7 @@ export async function GET() {
    * actually claim to have caused. Everything above this line is attribution;
    * this is measurement.
    */
-  const assignments = assignmentsRes.data ?? [];
+
   const recoveredById = new Map(
     recoveredEvents.map((o) => [o.revenue_event_id, o.recovered_amount_paise ?? 0])
   );
@@ -149,7 +132,7 @@ export async function GET() {
     },
     exceptions: auditExceptions.map((e) => ({
       revenue_event_id: e.revenue_event_id,
-      reason: (e.detail as any)?.reason,
+      reason: e.reason,
     })),
   });
 }

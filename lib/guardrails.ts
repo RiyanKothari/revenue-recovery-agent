@@ -1,4 +1,5 @@
-import { supabase } from "./supabase";
+import { getDb, type RecoveryDb } from "./db";
+import { DEFAULT_POLICY, type RecoveryPolicy } from "./policy";
 
 /**
  * Guardrails run BEFORE the agent is even asked to decide anything, and
@@ -8,41 +9,45 @@ import { supabase } from "./supabase";
  * prompt asking the LLM to behave, but code that doesn't let it do
  * otherwise.
  *
- * Every check below fails CLOSED. An earlier version destructured only
- * `{ data }` and dropped `error`, which meant a Supabase outage made every
- * guardrail evaluate to "allowed" — a DND opt-out would have been nudged
- * anyway. If we cannot prove an action is safe, we do not take it.
+ * Every check fails CLOSED. An earlier version dropped the database error
+ * from each query, which meant an outage made every guardrail evaluate to
+ * "allowed" — a DND opt-out would have been nudged anyway. The data layer
+ * now throws on infrastructure failure rather than returning a falsy value,
+ * and each check below turns that throw into a refusal with a specific
+ * reason. If we cannot prove an action is safe, we do not take it.
  */
 
-const MAX_RETRY_ATTEMPTS = 3;
-const COOLDOWN_MINUTES = 240; // 4 hours between nudges to the same customer
+/**
+ * Only the operations the safety rules actually need. Narrow on purpose:
+ * these are the rules that keep the agent from messaging people who asked
+ * not to be messaged, and a small surface keeps them testable against
+ * simulated failures.
+ */
+export type GuardrailDb = Pick<
+  RecoveryDb,
+  | "getConsent"
+  | "countActionsForEvent"
+  | "hasActionForCustomerSince"
+  | "getEventPaymentId"
+  | "hasDisputeFlag"
+>;
 
 export interface GuardrailResult {
   allowed: boolean;
   reason?: string; // populated when allowed = false, logged to audit trail
 }
 
-/**
- * Minimal shape of the Supabase client this module actually uses. Injectable
- * so the safety rules can be tested without a live database — these are the
- * rules that keep the agent from messaging people who asked not to be
- * messaged, so they deserve tests more than anything else here.
- */
-export type GuardrailDb = Pick<typeof supabase, "from">;
-
 export async function checkGuardrails(
   customerId: string,
   revenueEventId: string,
-  db: GuardrailDb = supabase
+  db: GuardrailDb = getDb(),
+  policy: RecoveryPolicy = DEFAULT_POLICY
 ): Promise<GuardrailResult> {
   // 1. Consent / DND — checked first, no exceptions.
-  const { data: consent, error: consentError } = await db
-    .from("customer_consent")
-    .select("*")
-    .eq("customer_id", customerId)
-    .maybeSingle();
-
-  if (consentError) {
+  let consent: { dnd: boolean } | null;
+  try {
+    consent = await db.getConsent(customerId);
+  } catch {
     return { allowed: false, reason: "guardrail_check_failed:consent" };
   }
 
@@ -51,78 +56,51 @@ export async function checkGuardrails(
   }
 
   // 2. Max retry attempts for this specific event.
-  const { count: attemptCount, error: attemptError } = await db
-    .from("recovery_actions")
-    .select("id, agent_decisions!inner(revenue_event_id)", {
-      count: "exact",
-      head: true,
-    })
-    .eq("agent_decisions.revenue_event_id", revenueEventId);
-
-  if (attemptError) {
+  let attemptCount: number;
+  try {
+    attemptCount = await db.countActionsForEvent(revenueEventId);
+  } catch {
     return { allowed: false, reason: "guardrail_check_failed:attempt_count" };
   }
 
-  // A null count with no error means the query ran but returned nothing
-  // countable — treat that as unproven rather than zero.
-  if (attemptCount == null || attemptCount >= MAX_RETRY_ATTEMPTS) {
-    return {
-      allowed: false,
-      reason:
-        attemptCount == null
-          ? "guardrail_check_failed:attempt_count_unavailable"
-          : "max_retry_attempts_reached",
-    };
+  if (attemptCount >= policy.maxRetryAttempts) {
+    return { allowed: false, reason: "max_retry_attempts_reached" };
   }
 
   // 3. Cooldown window since the last nudge to this customer, across events.
   const cooldownCutoff = new Date(
-    Date.now() - COOLDOWN_MINUTES * 60 * 1000
+    Date.now() - policy.cooldownMinutes * 60 * 1000
   ).toISOString();
 
-  const { data: recentActions, error: cooldownError } = await db
-    .from("recovery_actions")
-    .select(
-      "executed_at, agent_decisions!inner(revenue_event_id, revenue_events!inner(customer_id))"
-    )
-    .eq("agent_decisions.revenue_events.customer_id", customerId)
-    .gte("executed_at", cooldownCutoff)
-    .limit(1);
-
-  if (cooldownError) {
+  let recentlyContacted: boolean;
+  try {
+    recentlyContacted = await db.hasActionForCustomerSince(customerId, cooldownCutoff);
+  } catch {
     return { allowed: false, reason: "guardrail_check_failed:cooldown" };
   }
 
-  if (recentActions && recentActions.length > 0) {
+  if (recentlyContacted) {
     return { allowed: false, reason: "cooldown_window_active" };
   }
 
   // 4. Refund/dispute kill-switch — if this event's payment was later
   // refunded or disputed, never nudge for it again.
-  const { data: event, error: eventError } = await db
-    .from("revenue_events")
-    .select("razorpay_payment_id")
-    .eq("id", revenueEventId)
-    .single();
-
-  // The webhook inserts this row before calling us, so a missing or
-  // unreadable event means our view of the world is wrong. Refuse.
-  if (eventError || !event) {
+  let paymentId: string | null;
+  try {
+    // The webhook inserts this row before calling us, so a missing or
+    // unreadable event means our view of the world is wrong. Refuse.
+    paymentId = await db.getEventPaymentId(revenueEventId);
+  } catch {
     return { allowed: false, reason: "guardrail_check_failed:event_lookup" };
   }
 
-  if (event.razorpay_payment_id) {
-    const { data: disputeFlag, error: disputeError } = await db
-      .from("audit_log")
-      .select("id")
-      .eq("revenue_event_id", revenueEventId)
-      .eq("stage", "stopping_rule_triggered")
-      .contains("detail", { reason: "refund_or_dispute" })
-      .maybeSingle();
-
-    // maybeSingle() errors if more than one dispute flag exists. Both an
-    // error and a hit mean "do not nudge", so they collapse to one branch.
-    if (disputeError || disputeFlag) {
+  if (paymentId) {
+    try {
+      if (await db.hasDisputeFlag(revenueEventId)) {
+        return { allowed: false, reason: "refund_or_dispute_flagged" };
+      }
+    } catch {
+      // Both an error and a hit mean "do not nudge".
       return { allowed: false, reason: "refund_or_dispute_flagged" };
     }
   }
@@ -130,4 +108,5 @@ export async function checkGuardrails(
   return { allowed: true };
 }
 
-export { MAX_RETRY_ATTEMPTS, COOLDOWN_MINUTES };
+export const MAX_RETRY_ATTEMPTS = DEFAULT_POLICY.maxRetryAttempts;
+export const COOLDOWN_MINUTES = DEFAULT_POLICY.cooldownMinutes;

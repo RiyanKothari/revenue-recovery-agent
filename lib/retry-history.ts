@@ -1,49 +1,28 @@
-import { supabase } from "./supabase";
+import { getDb } from "./db";
+import type { RetryAttempt } from "./db";
+
+export type { RetryAttempt };
 
 /**
  * Prior recovery attempts, read back out of recovery_actions.
  *
  * The agent is told what has already been tried on this customer so it can
- * reason about escalation ("WhatsApp twice already, no conversion — escalate")
- * rather than proposing the same nudge forever. Without this the decision
- * engine sees an empty history on every event and cannot tell a first
- * attempt from a fourth.
- */
-
-export interface RetryAttempt {
-  attempt_number: number;
-  channel: string;
-  status: string;
-}
-
-/**
- * Every attempt made for this customer, across all of their failed payments.
- * Ordered oldest-first so the agent reads it as a timeline.
+ * reason about escalation ("WhatsApp twice already, no conversion —
+ * escalate") rather than proposing the same nudge forever. Without this the
+ * decision engine sees an empty history on every event and cannot tell a
+ * first attempt from a fourth.
  */
 export async function getCustomerRetryHistory(
   customerId: string
 ): Promise<RetryAttempt[]> {
-  const { data, error } = await supabase
-    .from("recovery_actions")
-    .select(
-      "attempt_number, channel, status, executed_at, agent_decisions!inner(revenue_events!inner(customer_id))"
-    )
-    .eq("agent_decisions.revenue_events.customer_id", customerId)
-    .order("executed_at", { ascending: true })
-    .limit(20);
-
-  if (error) {
+  try {
+    return await getDb().getCustomerRetryHistory(customerId, 20);
+  } catch (err: any) {
     // History is advisory, not a gate — the hard limits live in guardrails.ts
     // and are enforced there. Losing it degrades reasoning, not safety.
-    console.error("[retry-history] lookup failed:", error.message);
+    console.error("[retry-history] lookup failed:", err?.message ?? err);
     return [];
   }
-
-  return (data ?? []).map((row: any) => ({
-    attempt_number: row.attempt_number,
-    channel: row.channel,
-    status: row.status,
-  }));
 }
 
 /**
@@ -51,21 +30,11 @@ export async function getCustomerRetryHistory(
  * event. Previously hardcoded to 1, which made every row in recovery_actions
  * claim to be a first attempt.
  */
-export async function getNextAttemptNumber(
-  revenueEventId: string
-): Promise<number> {
-  const { count, error } = await supabase
-    .from("recovery_actions")
-    .select("id, agent_decisions!inner(revenue_event_id)", {
-      count: "exact",
-      head: true,
-    })
-    .eq("agent_decisions.revenue_event_id", revenueEventId);
-
-  if (error) {
-    console.error("[retry-history] attempt count failed:", error.message);
+export async function getNextAttemptNumber(revenueEventId: string): Promise<number> {
+  try {
+    return (await getDb().countActionsForEvent(revenueEventId)) + 1;
+  } catch (err: any) {
+    console.error("[retry-history] attempt count failed:", err?.message ?? err);
     return 1;
   }
-
-  return (count ?? 0) + 1;
 }

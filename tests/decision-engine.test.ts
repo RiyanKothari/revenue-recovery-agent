@@ -34,17 +34,9 @@ function harness(response: {
   const deps: Partial<DecisionDeps> = {
     client: { create: async () => response } as any,
     db: {
-      from() {
-        return {
-          insert(row: Record<string, unknown>) {
-            inserted.push(row);
-            return {
-              select: () => ({
-                single: async () => ({ data: { id: "dec_1" }, error: null }),
-              }),
-            };
-          },
-        };
+      async insertDecision(row: Record<string, unknown>) {
+        inserted.push(row);
+        return { id: "dec_1" };
       },
     } as any,
     audit: (async (_id: string, stage: string, detail: Record<string, unknown>) => {

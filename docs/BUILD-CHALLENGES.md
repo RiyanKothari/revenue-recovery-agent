@@ -261,3 +261,24 @@ Format per entry:
 **Fix:** 25% of events now reuse an earlier customer (deterministically, so re-runs reproduce), contact numbers follow the customer rather than the event index, and the script seeds `customer_consent` with ~5% of the pool opted out before posting any events. Added tests asserting the batch actually contains repeats and a non-empty opted-out set.
 
 **Lesson:** The most dangerous test fixture isn't one that fails — it's one that passes without exercising the thing it claims to test. "All invariants held" across a batch that couldn't violate them is a statement about the fixture, not the system.
+
+
+## 2026-09-01 — Made the pipeline run on PostgreSQL *and* MySQL
+
+**What broke:** Nothing — this was a deliberate migration, logged because it was the largest single refactor in the build and it surfaced real engine differences.
+
+**Why:** Razorpay's published stack runs MySQL historically and PostgreSQL / Aurora PostgreSQL for newer transactional systems. The pipeline was written against Supabase's PostgREST query builder, which is neither SQL nor portable — 41 call sites, five `!inner` joins with no MySQL equivalent, a `jsonb` containment query behind the dispute kill-switch, and Postgres error code `23505` hard-coded into the idempotency and attribution paths.
+
+**Fix:** Introduced a repository interface (`lib/db/types.ts`) expressed as domain operations — "has this customer been contacted recently?" rather than a query — with two implementations over `pg` and `mysql2`. Nothing above that layer knows which engine is in use.
+
+**The differences that actually mattered:**
+
+- MySQL has neither `gen_random_uuid()` defaults nor `RETURNING`, so there is no way to learn the id of a row you just inserted without a second round trip. Ids are now generated in the application, which keeps inserts single-shot on both engines.
+- Unique violations are `23505` on Postgres and `1062` on MySQL. Both implementations normalise this to `{ duplicate: true }`, so the webhook's idempotency logic no longer contains a database-specific magic string.
+- No `@>` containment operator in MySQL — the dispute kill-switch uses `JSON_UNQUOTE(JSON_EXTRACT(...))` there.
+- No array type in MySQL, so `bounded_by` is JSON there and `text[]` in Postgres.
+- MySQL `DATETIME` rejects an ISO string with a trailing `Z`, and returns `TINYINT(1)` where Postgres returns a boolean. Both are converted at the boundary so the pipeline only ever sees ISO strings and real booleans.
+
+**A side benefit worth noting:** the guardrail tests got substantially better. They previously mimicked a PostgREST client — a chainable fake with `.select().eq().maybeSingle()` — which tested the mock as much as the rules. They now inject domain operations and describe behaviour ("the consent lookup fails") instead, and the same suite covers both backends because the guardrails cannot tell which one they are talking to.
+
+**Also fixed in passing:** `lib/supabase.ts` is gone, and with it the last module that threw at import time.

@@ -1,41 +1,24 @@
-import { supabase } from "./supabase";
+import { getDb, type RecoveryDb } from "./db";
 import { DEFAULT_POLICY } from "./policy";
 import { verifyConformance, type ConformanceInput, type ConformanceReport } from "./invariants";
-import { estimateComplianceCost, type BlockedEvent, type ComplianceCostReport } from "./compliance-cost";
-import { estimateRecoveryProbability } from "./propensity";
-import { tallyByRootCause } from "./propensity";
+import {
+  estimateComplianceCost,
+  type BlockedEvent,
+  type ComplianceCostReport,
+} from "./compliance-cost";
+import { estimateRecoveryProbability, tallyByRootCause } from "./propensity";
 
 /**
  * Loads everything the conformance verifier and the compliance-cost estimate
  * need, then runs both.
  *
- * Pagination matters here rather than being defensive habit: PostgREST caps a
- * plain select at 1000 rows, and an 800-event batch writes several thousand
- * audit entries. A silently truncated read would make the verifier check a
- * fraction of the batch and report a clean pass — the worst possible failure
- * mode for something whose entire job is to be trustworthy.
+ * Reads go through the repository rather than a hosted query API, so there is
+ * no hidden row cap to trip over. That mattered: PostgREST silently truncates
+ * a plain select at 1000 rows, and an 800-event batch writes several thousand
+ * audit entries — the verifier would have checked a slice of the batch and
+ * reported a clean pass, which is the worst possible failure mode for
+ * something whose entire job is to be trustworthy.
  */
-
-const PAGE_SIZE = 1000;
-
-async function fetchAll<T>(
-  build: () => any,
-  label: string
-): Promise<{ rows: T[]; error: string | null }> {
-  const rows: T[] = [];
-
-  for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await build().range(from, from + PAGE_SIZE - 1);
-
-    if (error) return { rows, error: `${label}: ${error.message}` };
-    if (!data || data.length === 0) break;
-
-    rows.push(...(data as T[]));
-    if (data.length < PAGE_SIZE) break;
-  }
-
-  return { rows, error: null };
-}
 
 export interface ConformanceBundle {
   conformance: ConformanceReport;
@@ -43,67 +26,33 @@ export interface ConformanceBundle {
 }
 
 export async function runConformance(
-  db: Pick<typeof supabase, "from"> = supabase
+  db: RecoveryDb = getDb()
 ): Promise<ConformanceBundle> {
   const [events, decisions, actions, consent, assignments, stops, outcomes] =
     await Promise.all([
-      fetchAll<any>(
-        () => db.from("revenue_events").select("id, customer_id, amount_paise, root_cause"),
-        "revenue_events"
-      ),
-      fetchAll<any>(
-        () => db.from("agent_decisions").select("id, revenue_event_id, chosen_action, rationale, root_cause"),
-        "agent_decisions"
-      ),
-      fetchAll<any>(
-        () =>
-          db
-            .from("recovery_actions")
-            .select("agent_decision_id, channel, status, attempt_number, executed_at"),
-        "recovery_actions"
-      ),
-      fetchAll<any>(() => db.from("customer_consent").select("customer_id, dnd"), "customer_consent"),
-      fetchAll<any>(
-        () => db.from("experiment_assignments").select("revenue_event_id, arm"),
-        "experiment_assignments"
-      ),
-      fetchAll<any>(
-        () =>
-          db
-            .from("audit_log")
-            .select("revenue_event_id, detail")
-            .eq("stage", "stopping_rule_triggered"),
-        "audit_log"
-      ),
-      fetchAll<any>(
-        () => db.from("outcomes").select("revenue_event_id, recovered"),
-        "outcomes"
-      ),
+      db.listEvents(),
+      db.listDecisions(),
+      db.listRecoveryActions(),
+      db.listConsent(),
+      db.listAssignments(),
+      db.listStoppingRules(),
+      db.listOutcomes(),
     ]);
 
-  const failure = [events, decisions, actions, consent, assignments, stops, outcomes].find(
-    (r) => r.error
-  );
-  if (failure?.error) {
-    throw new Error(`Conformance load failed — ${failure.error}`);
-  }
-
   const input: ConformanceInput = {
-    events: events.rows,
-    decisions: decisions.rows,
-    actions: actions.rows,
-    consent: consent.rows,
-    assignments: assignments.rows,
+    events,
+    decisions,
+    actions,
+    consent,
+    assignments,
     policy: DEFAULT_POLICY,
   };
 
   // Propensity for the cost estimate, learned from the batch's own outcomes.
-  const rootCauseByEvent = new Map<string, string | null>(
-    events.rows.map((e: any) => [e.id, e.root_cause])
-  );
-  const decidedEventIds = new Set(decisions.rows.map((d: any) => d.revenue_event_id));
+  const rootCauseByEvent = new Map(events.map((e) => [e.id, e.root_cause]));
+  const decidedEventIds = new Set(decisions.map((d) => d.revenue_event_id));
   const recoveredEventIds = new Set(
-    outcomes.rows.filter((o: any) => o.recovered).map((o: any) => o.revenue_event_id)
+    outcomes.filter((o) => o.recovered).map((o) => o.revenue_event_id)
   );
 
   const tally = tallyByRootCause(
@@ -116,15 +65,15 @@ export async function runConformance(
   // Indexed rather than scanned: an 800-event batch produces thousands of
   // stop entries, and a nested find() here made the conformance endpoint do
   // over a million comparisons on every dashboard poll.
-  const eventById = new Map<string, any>(events.rows.map((e: any) => [e.id, e]));
+  const eventById = new Map(events.map((e) => [e.id, e]));
 
   const blocked: BlockedEvent[] = [];
-  for (const row of stops.rows as any[]) {
-    const event = eventById.get(row.revenue_event_id);
+  for (const stop of stops) {
+    const event = eventById.get(stop.revenue_event_id);
     if (!event) continue;
     blocked.push({
-      revenue_event_id: row.revenue_event_id,
-      reason: row.detail?.reason ?? "unknown",
+      revenue_event_id: stop.revenue_event_id,
+      reason: stop.reason,
       amount_paise: event.amount_paise,
       root_cause: event.root_cause,
     });

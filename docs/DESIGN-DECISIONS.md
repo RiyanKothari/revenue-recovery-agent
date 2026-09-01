@@ -11,12 +11,19 @@ The brief lists seven example directions. This project builds one — payment fa
 ## Razorpay's own agent infrastructure, not a REST wrapper
 The action executor calls Razorpay's official hosted MCP server (`mcp.razorpay.com`) rather than hand-rolling calls to the Payment Links API. Reasoning: Razorpay built this specifically for AI agents to take payment actions — using it is the most direct way to show this project understands and extends their actual product surface, not just their public docs.
 
-## PostgreSQL, because that's what Razorpay builds new systems on
-Their published stack lists the primary transactional database as **MySQL historically, PostgreSQL / Aurora PostgreSQL in newer systems**, carrying core payment and transactional workloads. This project is a new transactional system, so Postgres is the aligned choice rather than a tolerated one — Supabase is managed Postgres.
+## Runs on PostgreSQL or MySQL, because Razorpay runs both
+Their published stack lists the primary transactional database as **MySQL historically, PostgreSQL / Aurora PostgreSQL in newer systems**, carrying core payment and transactional workloads. Rather than pick a side, the pipeline supports both.
 
-Deliberately not MySQL. Matching it would mean aligning with the *legacy* half of their transactional stack, and it would cost a full data-layer rewrite: 41 query-builder call sites, five PostgREST `!inner` joins that have no MySQL equivalent, three uses of Postgres error code `23505` in the idempotency and attribution paths, and a `jsonb` containment query that powers the dispute kill-switch. In a six-day build that is a day spent replacing working, tested safety code with untested equivalents, to move *away* from what they use for new systems.
+The whole difference lives behind one repository interface (`lib/db/types.ts`) with two implementations. Nothing above that layer — not the guardrails, not the executor, not the conformance verifier — knows which engine it is talking to. `DATABASE_URL` decides, and the driver is inferred from the URL scheme.
 
-Worth noting the rest of their stack is Postgres-adjacent too — TimescaleDB, a Postgres extension, serves their real-time analytical queries. The batch summary and lift computation in this project are exactly that query shape.
+Two rules both implementations must honour, and they are why this is a hand-written interface rather than an ORM:
+
+1. **Infrastructure failures throw.** They never return null, an empty array, or zero. Every guardrail is fail-closed, and that only works if "the query failed" is distinguishable from "there is no such row" — returning a falsy value on error is exactly how a database blip silently disables a safety rule. That was a real bug earlier in this build, and the interface now makes it hard to reintroduce.
+2. **Duplicate inserts are reported, not thrown.** Webhook retries are normal traffic, and the engines disagree on how to signal a unique violation (Postgres `23505`, MySQL `ER_DUP_ENTRY`/1062). Each implementation normalises that to `{ duplicate: true }`, so the idempotency logic never has to know which database is underneath.
+
+Postgres is implemented over `pg` rather than a hosted SDK, so it runs against Supabase, RDS, or the Aurora PostgreSQL their newer systems use. MySQL is implemented over `mysql2`, which also covers TiDB.
+
+The engine differences that actually bite are forced, not stylistic: MySQL has no `gen_random_uuid()` default and no `RETURNING`, so ids are generated in the application to keep inserts single-shot; it has no `jsonb` containment operator, so the dispute kill-switch uses `JSON_EXTRACT`; and it has no array type, so `bounded_by` is JSON there and `text[]` in Postgres.
 
 ## How this would scale on their infrastructure
 Their pipeline moves database changes into Kafka via CDC (Maxwell reading MySQL binlogs), processes them with Flink/Spark, and lands them in S3, Snowflake, and Elasticsearch for dashboards.
@@ -41,7 +48,7 @@ Not just unknown root causes. Every guardrail check inspects its database error 
 `guardrails.ts` enforces the retry ceiling and cooldown by *counting rows* that `action-executor.ts` writes. So the executor's inserts are checked, and a failure throws instead of continuing — an action that happened but wasn't recorded is worse than one that never happened, because the customer was contacted and no guardrail can see it. Throwing is safe here specifically because the webhook's idempotency check short-circuits Razorpay's retry on the existing event, so it cannot cause a second send. Reasoning: a stateful safety rule is only as good as the writes it reads.
 
 ## Safety code is dependency-injected so it can be tested against failure
-Guardrails, the executor and the decision engine all take their database, API client and audit logger as injectable parameters. Reasoning: the interesting behaviour of safety code is what it does when things break, and none of that is reachable by calling the real services and hoping. This is what makes it possible to assert "a total database outage blocks rather than allows" as a test rather than a claim — 51 tests run with no credentials at all.
+Guardrails, the executor and the decision engine all take their database, API client and audit logger as injectable parameters. Reasoning: the interesting behaviour of safety code is what it does when things break, and none of that is reachable by calling the real services and hoping. This is what makes it possible to assert "a total database outage blocks rather than allows" as a test rather than a claim — 108 tests run with no credentials at all.
 
 ## Two recovery rates, because one number would be dishonest
 The dashboard reports `recovery_rate` (of everything that failed, how much came back) *and* `recovery_rate_attempted` (of what the agent actually acted on, how much converted). Reasoning: dividing by all failures understates the agent, since it deliberately never touches unknown root causes; dividing only by attempts overstates the business outcome. Reporting one number would have meant picking which way to be misleading.

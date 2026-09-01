@@ -26,14 +26,31 @@ Once `.env.local` is filled in, run:
 npm run preflight
 ```
 
-This checks all five services and names exactly what is wrong with each — missing env vars, missing Supabase tables, bad Razorpay keys, a merchant token generated with a trailing newline, an expired WhatsApp token, no Anthropic credit. It exits non-zero if anything blocking fails.
+This checks all five services and names exactly what is wrong with each — missing env vars, missing database tables, bad Razorpay keys, a merchant token generated with a trailing newline, an expired WhatsApp token, no Anthropic credit. It exits non-zero if anything blocking fails.
 
 Run it before `npm run seed:batch`. A misconfigured service otherwise surfaces as a confusing failure deep inside the webhook rather than as "your key is wrong".
 
-## 2. Supabase
-1. Create a project at supabase.com (free tier is enough for this).
-2. In the SQL editor, run `supabase/schema.sql`.
-3. Copy the Project URL and the `service_role` key (Settings → API) into `.env.local` as `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+## 2. Database — PostgreSQL or MySQL/TiDB
+
+Razorpay runs MySQL historically and PostgreSQL / Aurora PostgreSQL for newer transactional systems, so this project supports both. Pick one; nothing above `lib/db/` changes.
+
+**PostgreSQL (recommended — matches what Razorpay uses for new systems)**
+1. Create a project at supabase.com (free tier is enough), or use any Postgres — RDS, Aurora, or local.
+2. Supabase: **Settings → Database → Connection string → URI**. Copy it into `DATABASE_URL` and replace `[YOUR-PASSWORD]` with the database password you set at project creation.
+3. Run `db/schema.postgres.sql` against it (Supabase: SQL Editor → New query → paste → run).
+
+**MySQL / TiDB**
+1. TiDB Serverless (tidbcloud.com) has a free tier and speaks the MySQL protocol; any MySQL 8 works too.
+2. Copy the connection URI into `DATABASE_URL` — it starts `mysql://`.
+3. Run `db/schema.mysql.sql` against it.
+
+The driver is inferred from the URL scheme, so `DATABASE_DRIVER` only needs setting if your host hands out a non-standard URI.
+
+Verify before going further:
+```
+npm run preflight database
+```
+This reports which driver was selected, whether the connection works, and any missing tables.
 
 ## 3. Razorpay test mode
 1. Sign up / log in to the Razorpay Dashboard, switch to **Test Mode** (toggle top-left).

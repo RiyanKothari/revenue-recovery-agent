@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { getDb } from "./db";
 
 export type AuditStage =
   | "event_received"
@@ -20,15 +20,11 @@ export async function logAudit(
   stage: AuditStage,
   detail: Record<string, unknown>
 ) {
-  const { error } = await supabase.from("audit_log").insert({
-    revenue_event_id: revenueEventId,
-    stage,
-    detail,
-  });
-
-  if (error) {
+  try {
+    await getDb().insertAudit(revenueEventId, stage, detail);
+  } catch (err: any) {
     // Audit logging failing silently would defeat the point — surface it
     // loudly rather than swallowing it.
-    console.error(`[audit] failed to log stage="${stage}":`, error.message);
+    console.error(`[audit] failed to log stage="${stage}":`, err?.message ?? err);
   }
 }

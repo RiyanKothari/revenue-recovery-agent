@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { supabase } from "./supabase";
+import { getDb, type RecoveryDb } from "./db";
 import { logAudit } from "./audit";
 import type { Classification } from "./classifier";
 
@@ -62,7 +62,7 @@ You are never allowed to invent a new action, change the payment amount, or waiv
  */
 export interface DecisionDeps {
   client: Pick<Anthropic["messages"], "create">;
-  db: Pick<typeof supabase, "from">;
+  db: Pick<RecoveryDb, "insertDecision">;
   audit: typeof logAudit;
 }
 
@@ -71,7 +71,7 @@ export async function decide(
   deps: Partial<DecisionDeps> = {}
 ): Promise<Decision> {
   const client = deps.client ?? anthropic.messages;
-  const db = deps.db ?? supabase;
+  const db = deps.db ?? getDb();
   const audit = deps.audit ?? logAudit;
 
   const userPrompt = `Root cause: ${input.classification.root_cause}
@@ -131,19 +131,13 @@ Choose the best action and explain why.`;
         boundedBy: ["fixed_action_set"],
       };
 
-  const { data: saved, error } = await db
-    .from("agent_decisions")
-    .insert({
-      revenue_event_id: input.revenueEventId,
-      root_cause: input.classification.root_cause,
-      chosen_action: decision.action,
-      rationale: decision.rationale,
-      bounded_by: decision.boundedBy,
-    })
-    .select("id")
-    .single();
-
-  if (error) throw error;
+  const saved = await db.insertDecision({
+    revenue_event_id: input.revenueEventId,
+    root_cause: input.classification.root_cause,
+    chosen_action: decision.action,
+    rationale: decision.rationale,
+    bounded_by: decision.boundedBy,
+  });
 
   if (!parsed) {
     await audit(input.revenueEventId, "stopping_rule_triggered", {

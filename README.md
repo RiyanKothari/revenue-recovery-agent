@@ -51,13 +51,15 @@ Audit trail → Dashboard (live reasoning feed + measured batch summary), built 
 
 Every stage writes to `audit_log`. If a stage doesn't log, it didn't happen as far as the audit-trail requirement is concerned.
 
-Storage is **PostgreSQL** (via Supabase), matching what Razorpay's published stack uses for newer transactional systems — Postgres / Aurora Postgres on core payment workloads, with TimescaleDB serving the real-time analytical layer. `audit_log` is append-only and event-shaped, so at production volume the dashboard routes would read from a CDC stream rather than polling the transactional store. See `docs/DESIGN-DECISIONS.md`.
+Storage runs on **PostgreSQL or MySQL/TiDB** — Razorpay's published stack uses MySQL historically and PostgreSQL / Aurora PostgreSQL for newer transactional systems, so this pipeline supports both rather than picking a side. The whole difference lives behind one repository interface (`lib/db/`); nothing above it knows which engine is in use. Set `DATABASE_URL` to a `postgres://` or `mysql://` connection string and the driver is inferred from the scheme.
+
+`audit_log` is append-only and event-shaped, so at production volume the dashboard routes would read from a CDC stream rather than polling the transactional store. See `docs/DESIGN-DECISIONS.md`.
 
 See `docs/DESIGN-DECISIONS.md` for why each choice was made — that doc is the source for the pitch video's "important decisions" section.
 
 ## Quick start
 
-Full walkthrough in `docs/SETUP.md` (Supabase, Razorpay test mode, WhatsApp, Anthropic key).
+Full walkthrough in `docs/SETUP.md` (database, Razorpay test mode, WhatsApp, Anthropic key).
 
 ```bash
 npm install
@@ -69,7 +71,7 @@ Then fill in `.env.local` from `.env.example` and verify every external service 
 npm run preflight
 ```
 
-Preflight checks all five dependencies and names exactly what is misconfigured — env vars, Supabase tables, Razorpay REST auth, the MCP merchant token (including the trailing-newline mistake `echo` introduces), Claude model access, and WhatsApp credentials. It exits non-zero on anything blocking.
+Preflight checks all five dependencies and names exactly what is misconfigured — env vars, database connection and schema, Razorpay REST auth, the MCP merchant token (including the trailing-newline mistake `echo` introduces), Claude model access, and WhatsApp credentials. It exits non-zero on anything blocking.
 
 ```bash
 npm run dev
@@ -86,7 +88,7 @@ Dashboard: `/dashboard`
 npm test
 ```
 
-100 tests, no credentials required — the external dependencies are injected, so the safety rules are tested against simulated database failures and the send path is tested without contacting Razorpay or Meta.
+108 tests, no credentials required — the external dependencies are injected, so the safety rules are tested against simulated database failures and the send path is tested without contacting Razorpay or Meta.
 
 Coverage is deliberately weighted toward the failure paths: guardrails under a total database outage, the classifier's fail-closed branch, webhook signature rejection, an agent response that is truncated or out of bounds, and a recovery action that cannot be recorded.
 
@@ -99,9 +101,11 @@ app/api/audit-feed/          live reasoning feed for the dashboard
 app/api/conformance/         machine-checked safety invariants + cost of the rules
 app/dashboard/               the UI, built on @razorpay/blade
 lib/                         classifier, guardrails, decision engine, MCP client, WhatsApp, audit
+lib/db/                      repository interface + postgres and mysql implementations
 scripts/                     preflight, conformance verifier, batch generator
 tests/                       unit tests for every module on the critical path
-supabase/schema.sql          full schema
+db/schema.postgres.sql       PostgreSQL schema
+db/schema.mysql.sql          MySQL / TiDB schema
 docs/                        setup, design decisions, build challenges log
 ```
 

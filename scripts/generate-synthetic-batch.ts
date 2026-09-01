@@ -109,7 +109,7 @@ export function generateBatch(size = 55) {
  * key, so re-running the batch doesn't duplicate or drift.
  */
 async function seedConsent(size: number) {
-  const { supabase } = await import("../lib/supabase");
+  const { getDb } = await import("../lib/db");
 
   const pool = uniqueCustomerCount(size);
   const rows = Array.from({ length: pool }, (_, idx) => ({
@@ -121,13 +121,11 @@ async function seedConsent(size: number) {
 
   const optedOut = rows.filter((r) => r.dnd).length;
 
-  const { error } = await supabase
-    .from("customer_consent")
-    .upsert(rows, { onConflict: "customer_id" });
-
-  if (error) {
+  try {
+    await getDb().upsertConsent(rows);
+  } catch (err: any) {
     throw new Error(
-      `Could not seed customer_consent (${error.message}). The DND guardrail would be untested — fix this before trusting the batch.`
+      `Could not seed customer_consent (${err?.message ?? err}). The DND guardrail would be untested — fix this before trusting the batch.`
     );
   }
 

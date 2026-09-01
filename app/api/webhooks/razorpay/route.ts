@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyRazorpaySignature } from "@/lib/verify-webhook";
-import { supabase } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { classify } from "@/lib/classifier";
 import { checkGuardrails } from "@/lib/guardrails";
@@ -70,13 +70,10 @@ export async function POST(req: NextRequest) {
   // webhook handler had. Unique constraint on razorpay_event_id does the
   // real enforcement; the .maybeSingle() check is just to short-circuit
   // cleanly and return 200 instead of erroring on a legitimate retry.
-  const { data: existing } = await supabase
-    .from("revenue_events")
-    .select("id")
-    .eq("razorpay_event_id", razorpayEventId)
-    .maybeSingle();
+  const db = getDb();
+  const existingId = await db.findEventIdByRazorpayEventId(razorpayEventId);
 
-  if (existing) {
+  if (existingId) {
     // Treating every known event id as a finished duplicate loses events. If
     // the first attempt inserted the row and then died mid-pipeline — an
     // Anthropic timeout, a transient database error — the event is stuck:
@@ -86,64 +83,60 @@ export async function POST(req: NextRequest) {
     // An agent_decisions row is the safe marker for "already handled":
     // decide() writes it before any send happens, so if one exists a re-run
     // could double-contact the customer, and if it doesn't, resuming is safe.
-    const { count: decided, error: decidedError } = await supabase
-      .from("agent_decisions")
-      .select("id", { count: "exact", head: true })
-      .eq("revenue_event_id", existing.id);
-
-    // Can't tell whether it was handled — refuse rather than risk a second
-    // send. Razorpay will retry.
-    if (decidedError) {
+    let decided: number;
+    try {
+      decided = await db.countDecisionsForEvent(existingId);
+    } catch {
+      // Can't tell whether it was handled — refuse rather than risk a second
+      // send. Razorpay will retry.
       return NextResponse.json({ error: "dedupe_check_failed" }, { status: 500 });
     }
 
-    if ((decided ?? 0) > 0) {
+    if (decided > 0) {
       return NextResponse.json({ status: "duplicate_ignored" });
     }
 
-    await logAudit(existing.id, "event_received", {
+    await logAudit(existingId, "event_received", {
       razorpay_event_id: razorpayEventId,
       note: "Resuming an event whose first attempt did not reach a decision.",
     });
 
-    return processEvent({ eventId: existing.id, paymentEntity });
+    return processEvent({ eventId: existingId, paymentEntity });
   }
 
-  const { data: event, error: insertError } = await supabase
-    .from("revenue_events")
-    .insert({
+  let inserted;
+  try {
+    inserted = await db.insertRevenueEvent({
       razorpay_event_id: razorpayEventId,
       event_type: eventType,
-      razorpay_payment_id: paymentEntity.id,
-      razorpay_order_id: paymentEntity.order_id,
+      razorpay_payment_id: paymentEntity.id ?? null,
+      razorpay_order_id: paymentEntity.order_id ?? null,
       amount_paise: paymentEntity.amount,
       currency: paymentEntity.currency ?? "INR",
-      error_code: paymentEntity.error_code,
-      error_description: paymentEntity.error_description,
-      payment_method: paymentEntity.method,
-      customer_id: paymentEntity.customer_id ?? paymentEntity.contact,
-      customer_contact: paymentEntity.contact,
+      error_code: paymentEntity.error_code ?? null,
+      error_description: paymentEntity.error_description ?? null,
+      payment_method: paymentEntity.method ?? null,
+      customer_id: paymentEntity.customer_id ?? paymentEntity.contact ?? null,
+      customer_contact: paymentEntity.contact ?? null,
       raw_payload: payload,
-    })
-    .select("id")
-    .single();
-
-  if (insertError) {
-    // Two concurrent deliveries can both pass the check above; the unique
-    // constraint is the real enforcement, and losing that race just means
-    // the other request is handling it.
-    if (insertError.code === "23505") {
-      return NextResponse.json({ status: "duplicate_ignored" });
-    }
-    return NextResponse.json({ error: insertError.message }, { status: 500 });
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message ?? "insert_failed" }, { status: 500 });
   }
 
-  await logAudit(event.id, "event_received", {
+  // Two concurrent deliveries can both pass the check above; the unique
+  // constraint is the real enforcement, and losing that race just means the
+  // other request is handling it.
+  if ("duplicate" in inserted) {
+    return NextResponse.json({ status: "duplicate_ignored" });
+  }
+
+  await logAudit(inserted.id, "event_received", {
     razorpay_event_id: razorpayEventId,
     amount_paise: paymentEntity.amount,
   });
 
-  return processEvent({ eventId: event.id, paymentEntity });
+  return processEvent({ eventId: inserted.id, paymentEntity });
 }
 
 /**
@@ -165,10 +158,11 @@ async function processEvent({
     payment_method: paymentEntity.method,
   });
 
-  await supabase
-    .from("revenue_events")
-    .update({ root_cause: classification.root_cause, processed_at: new Date().toISOString() })
-    .eq("id", eventId);
+  await getDb().setClassification(
+    eventId,
+    classification.root_cause,
+    new Date().toISOString()
+  );
 
   await logAudit(eventId, "classified", { classification });
 
@@ -238,23 +232,21 @@ async function processEvent({
   // events that were never going to be touched.
   const arm = assignArm(eventId, policy);
 
-  const { error: assignmentError } = await supabase
-    .from("experiment_assignments")
-    .insert({
+  // Assignment is a pure function of the event id, so a failed write costs
+  // reproducibility, not correctness — but an unrecorded control event would
+  // silently vanish from the denominator and inflate measured lift.
+  try {
+    await getDb().insertAssignment({
       revenue_event_id: eventId,
       arm,
       policy_version: policy.version,
       recovery_probability: probability,
       expected_value_paise: ev.expectedValuePaise,
     });
-
-  // Assignment is a pure function of the event id, so a failed write costs
-  // reproducibility, not correctness — but an unrecorded control event would
-  // silently vanish from the denominator and inflate measured lift.
-  if (assignmentError && assignmentError.code !== "23505") {
+  } catch (err: any) {
     await logAudit(eventId, "stopping_rule_triggered", {
       reason: "experiment_assignment_failed",
-      detail: assignmentError.message,
+      detail: err?.message ?? String(err),
     });
     return NextResponse.json({ error: "assignment_failed" }, { status: 500 });
   }

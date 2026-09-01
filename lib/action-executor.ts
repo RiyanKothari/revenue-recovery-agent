@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { getDb, type RecoveryDb } from "./db";
 import { logAudit } from "./audit";
 import { createAndSendRetryLink } from "./razorpay-mcp-client";
 import { sendWhatsAppRetryNudge } from "./whatsapp";
@@ -16,7 +16,7 @@ import type { Decision } from "./decision-engine";
  * disabling the read path's safety rules.
  */
 
-export type ExecutorDb = Pick<typeof supabase, "from">;
+export type ExecutorDb = Pick<RecoveryDb, "insertRecoveryAction">;
 
 export interface ExecutorDeps {
   db: ExecutorDb;
@@ -25,12 +25,16 @@ export interface ExecutorDeps {
   audit: typeof logAudit;
 }
 
-const defaultDeps: ExecutorDeps = {
-  db: supabase,
-  createLink: createAndSendRetryLink,
-  sendWhatsApp: sendWhatsAppRetryNudge,
-  audit: logAudit,
-};
+/** Resolved per call, not at module scope: getDb() throws without a
+ *  configured DATABASE_URL, and importing this module must never do that. */
+function resolveDeps(overrides: Partial<ExecutorDeps>): ExecutorDeps {
+  return {
+    db: overrides.db ?? getDb(),
+    createLink: overrides.createLink ?? createAndSendRetryLink,
+    sendWhatsApp: overrides.sendWhatsApp ?? sendWhatsAppRetryNudge,
+    audit: overrides.audit ?? logAudit,
+  };
+}
 
 export async function executeAction(
   params: {
@@ -44,7 +48,7 @@ export async function executeAction(
   },
   deps: Partial<ExecutorDeps> = {}
 ) {
-  const { db, createLink, sendWhatsApp, audit } = { ...defaultDeps, ...deps };
+  const { db, createLink, sendWhatsApp, audit } = resolveDeps(deps);
   const { decision, revenueEventId, agentDecisionId } = params;
 
   /**
@@ -54,25 +58,29 @@ export async function executeAction(
    * retry short-circuits on the existing revenue_event, so throwing here
    * cannot cause a second send.
    */
-  const recordAction = async (row: Record<string, unknown>, channel: string) => {
-    const { error } = await db.from("recovery_actions").insert(row);
-    if (!error) return;
+  const recordAction = async (
+    row: Parameters<ExecutorDb["insertRecoveryAction"]>[0],
+    channel: string
+  ) => {
+    try {
+      await db.insertRecoveryAction(row);
+    } catch (err: any) {
+      await audit(revenueEventId, "action_executed", {
+        channel,
+        delivery_success: false,
+        error: `action_not_recorded: ${err?.message ?? err}`,
+        warning:
+          "Action may have been delivered but is absent from recovery_actions — retry ceiling and cooldown cannot count it.",
+      });
 
-    await audit(revenueEventId, "action_executed", {
-      channel,
-      delivery_success: false,
-      error: `action_not_recorded: ${error.message}`,
-      warning:
-        "Action may have been delivered but is absent from recovery_actions — retry ceiling and cooldown cannot count it.",
-    });
-
-    // Tagged so the catch below can tell "the send failed" (recoverable —
-    // record it as failed) from "the recording failed" (must propagate).
-    const failure = new Error(
-      `Failed to record recovery action for event ${revenueEventId}: ${error.message}`
-    );
-    (failure as any).recordFailure = true;
-    throw failure;
+      // Tagged so the catch below can tell "the send failed" (recoverable —
+      // record it as failed) from "the recording failed" (must propagate).
+      const failure = new Error(
+        `Failed to record recovery action for event ${revenueEventId}: ${err?.message ?? err}`
+      );
+      (failure as any).recordFailure = true;
+      throw failure;
+    }
   };
 
   if (decision.action === "escalate_human") {

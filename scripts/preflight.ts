@@ -45,14 +45,14 @@ function mask(value: string | undefined): string {
  * haven't created yet buries the result you actually wanted to see.
  *
  *   npm run preflight                        -- everything
- *   npm run preflight supabase razorpay      -- just those
+ *   npm run preflight database razorpay      -- just those
  *   npm run preflight --skip anthropic       -- everything else
  */
-const SERVICES = ["supabase", "razorpay", "mcp", "anthropic", "whatsapp"] as const;
+const SERVICES = ["database", "razorpay", "mcp", "anthropic", "whatsapp"] as const;
 type Service = (typeof SERVICES)[number];
 
 const SERVICE_VARS: Record<Service, string[]> = {
-  supabase: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+  database: ["DATABASE_URL"],
   razorpay: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"],
   mcp: ["RAZORPAY_MCP_MERCHANT_TOKEN"],
   anthropic: ["ANTHROPIC_API_KEY"],
@@ -71,19 +71,6 @@ function selectedServices(argv: string[]): Service[] {
   const named = args.filter((a) => (SERVICES as readonly string[]).includes(a));
   return named.length ? (named as Service[]) : [...SERVICES];
 }
-
-const EXPECTED_TABLES = [
-  "revenue_events",
-  "agent_decisions",
-  "recovery_actions",
-  "outcomes",
-  "customer_consent",
-  "audit_log",
-  // Added after the initial schema — a stale database is missing exactly
-  // this one, and without it every event 500s at assignment time rather
-  // than failing here with a clear message.
-  "experiment_assignments",
-];
 
 async function checkEnv(services: Service[]) {
   console.log("\nEnvironment");
@@ -107,43 +94,60 @@ async function checkEnv(services: Service[]) {
   return required.every((v) => Boolean(process.env[v]));
 }
 
-async function checkSupabase() {
-  console.log("\nSupabase");
+async function checkDatabase() {
+  console.log("\nDatabase");
 
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (!process.env.DATABASE_URL) {
     record({
       name: "connection",
       status: "skip",
-      detail: "credentials not set",
-      fix: "Fill SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY first",
+      detail: "DATABASE_URL not set",
+      fix: "Set a postgres:// or mysql:// connection string — see docs/SETUP.md",
     });
     return;
   }
 
-  const { createClient } = await import("@supabase/supabase-js");
-  const db = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    { auth: { persistSession: false } }
-  );
+  const { getDb, resolveDriver } = await import("../lib/db");
+  const driver = resolveDriver(process.env.DATABASE_URL, process.env.DATABASE_DRIVER);
 
-  for (const table of EXPECTED_TABLES) {
-    try {
-      const { error } = await db.from(table).select("*", { head: true, count: "exact" });
-      record({
-        name: `table ${table}`,
-        status: error ? "fail" : "ok",
-        detail: error ? error.message : "reachable",
-        fix: error ? "Run supabase/schema.sql in the Supabase SQL editor" : undefined,
-      });
-    } catch (err: any) {
-      record({
-        name: `table ${table}`,
-        status: "fail",
-        detail: err?.message ?? "unreachable",
-        fix: "Check SUPABASE_URL is the project URL, not the dashboard URL",
-      });
-    }
+  const source = process.env.DATABASE_DRIVER ? "DATABASE_DRIVER" : "URL scheme";
+  record({
+    name: "driver",
+    status: "ok",
+    detail: `${driver} (from ${source})`,
+  });
+
+  let db;
+  try {
+    db = getDb();
+    await db.ping();
+    record({ name: "connection", status: "ok", detail: "reachable" });
+  } catch (err: any) {
+    record({
+      name: "connection",
+      status: "fail",
+      detail: err?.message ?? "could not connect",
+      fix: "Check the connection string, and that your IP is allowed by the database's network rules",
+    });
+    return;
+  }
+
+  try {
+    const missing = await db.missingTables();
+    record({
+      name: "schema",
+      status: missing.length === 0 ? "ok" : "fail",
+      detail:
+        missing.length === 0
+          ? "all 7 tables present"
+          : `missing: ${missing.join(", ")}`,
+      fix:
+        missing.length === 0
+          ? undefined
+          : `Run db/schema.${driver}.sql against this database`,
+    });
+  } catch (err: any) {
+    record({ name: "schema", status: "fail", detail: err?.message ?? "could not inspect" });
   }
 }
 
@@ -366,7 +370,7 @@ async function main() {
     console.log("\nSome required variables are missing — the checks below will be partial.");
   }
 
-  if (services.includes("supabase")) await checkSupabase();
+  if (services.includes("database")) await checkDatabase();
   if (services.includes("razorpay")) await checkRazorpayRest();
   if (services.includes("mcp")) await checkMerchantToken();
   if (services.includes("anthropic")) await checkAnthropic();
