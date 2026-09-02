@@ -88,3 +88,97 @@ Prior recovery attempts for this customer: ${history}
 
 Choose the best action and explain why.`;
 }
+
+/**
+ * Turns a cache key back into the situation it stands for.
+ *
+ * The constellation widget shows one circle per key, and a raw key
+ * (`insufficient_funds|card|2000_to_10000|attempts:1|tried:none`) tells a
+ * reader nothing about why those events were treated as one. Decoding it on
+ * the way out keeps the key itself terse — it is an index, not a label — while
+ * still letting the UI say what was actually shared.
+ *
+ * Parses defensively: a key written by an older build, or one with a field
+ * added later, degrades to the raw segment rather than throwing. A dashboard
+ * panel is not worth a 500.
+ */
+const BAND_LABELS: Record<string, string> = {
+  under_500: "under Rs 500",
+  "500_to_2000": "Rs 500-2,000",
+  "2000_to_10000": "Rs 2,000-10,000",
+  over_10000: "over Rs 10,000",
+};
+
+export function describeCacheKey(key: string): string {
+  const [rootCause, method, band, attempts, tried] = key.split("|");
+
+  const parts: string[] = [];
+  if (rootCause) parts.push(rootCause.replace(/_/g, " "));
+  if (method) parts.push(method);
+  if (band) parts.push(BAND_LABELS[band] ?? band.replace(/_/g, " "));
+
+  const attemptCount = Number(attempts?.replace("attempts:", ""));
+  if (Number.isFinite(attemptCount)) {
+    parts.push(attemptCount === 0 ? "first attempt" : `after ${attemptCount} attempt(s)`);
+  }
+
+  const channels = tried?.replace("tried:", "");
+  if (channels) {
+    parts.push(channels === "none" ? "nothing tried yet" : `already tried ${channels}`);
+  }
+
+  return parts.join(" · ");
+}
+
+export interface CacheUsageRow {
+  cache_key?: string | null;
+  from_cache?: boolean;
+}
+
+export interface CacheStats {
+  /** Distinct situations the agent was asked about. */
+  distinctSituations: number;
+  /** Decisions the model actually reasoned for. */
+  modelCalls: number;
+  /** Decisions served from a previous answer. */
+  reusedDecisions: number;
+  totalDecisions: number;
+  reuseRate: number;
+  situations: { key: string; description: string; served: number }[];
+}
+
+/**
+ * The memoisation result, computed from the decision rows themselves.
+ *
+ * Deriving it from what was written rather than from a counter incremented at
+ * call time matters: a counter measures what the code believed it did, and
+ * this measures what the database can prove. They should agree, and if they
+ * ever do not, the one backed by rows is the one to trust.
+ */
+export function summariseCache(rows: CacheUsageRow[]): CacheStats {
+  const served = new Map<string, number>();
+  let modelCalls = 0;
+  let reused = 0;
+
+  for (const row of rows) {
+    if (row.from_cache) reused += 1;
+    else modelCalls += 1;
+
+    const key = row.cache_key;
+    if (key) served.set(key, (served.get(key) ?? 0) + 1);
+  }
+
+  const total = rows.length;
+
+  return {
+    distinctSituations: served.size,
+    modelCalls,
+    reusedDecisions: reused,
+    totalDecisions: total,
+    reuseRate: total ? reused / total : 0,
+    situations: [...served.entries()]
+      .map(([key, count]) => ({ key, description: describeCacheKey(key), served: count }))
+      // Biggest circles first, so the widget draws large behind small.
+      .sort((a, b) => b.served - a.served),
+  };
+}

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { computeLift, type ArmOutcome } from "@/lib/experiment";
 import { DEFAULT_POLICY } from "@/lib/policy";
+import { bucketOutcomes } from "@/lib/outcome-buckets";
 
 // Without this Next prerenders this handler at build time and the dashboard
 // polls a frozen snapshot forever.
@@ -122,6 +123,23 @@ export async function GET() {
     (e.razorpay_order_id ?? "").startsWith("order_synthetic_")
   ).length;
 
+  /**
+   * Where the money went, in rupees. The exception list below answers "which
+   * events stopped and why"; this answers "how much of the batch ended up in
+   * each outcome", which is the question the hero renders and the one a
+   * payments team actually asks. Counting events instead would report a batch
+   * that blocked 35 small failures and recovered three large ones as mostly
+   * blocked, when the money says the opposite.
+   */
+  const outcomeBuckets = bucketOutcomes({
+    events: events.map((e) => ({ id: e.id, amount_paise: e.amount_paise })),
+    recovered: recoveredEvents.map((o) => ({
+      revenue_event_id: o.revenue_event_id,
+      recovered_amount_paise: o.recovered_amount_paise,
+    })),
+    stops: auditExceptions,
+  });
+
   return NextResponse.json({
     total_events: events.length,
     total_at_risk_paise: totalAtRiskPaise,
@@ -136,6 +154,9 @@ export async function GET() {
     timed_recoveries: durationsMinutes.length,
 
     synthetic_events: syntheticEvents,
+
+    // Rupee partition of the batch — see bucketOutcomes for the ordering rule.
+    outcome_buckets: outcomeBuckets.buckets,
 
     // Measured causal impact, not attribution.
     experiment: {

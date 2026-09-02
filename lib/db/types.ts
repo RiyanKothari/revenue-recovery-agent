@@ -71,6 +71,8 @@ export interface DecisionRow {
   chosen_action: string;
   rationale: string | null;
   from_cache?: boolean;
+  /** Which situation this decision answered — see lib/decision-cache.ts. */
+  cache_key?: string | null;
 }
 
 export interface RecoveryActionInsert {
@@ -200,6 +202,11 @@ export interface RecoveryDb {
   listDecisionEventIds(): Promise<string[]>;
   listAssignments(): Promise<{ revenue_event_id: string; arm: string }[]>;
   listRecentAudit(limit: number, stages?: string[]): Promise<AuditRow[]>;
+  /**
+   * Every audit row for one event, oldest first — the trace view reads the
+   * pipeline forwards, unlike the feed, which reads it backwards.
+   */
+  listAuditForEvent(revenueEventId: string): Promise<AuditRow[]>;
   listEventsByIds(ids: string[]): Promise<
     { id: string; amount_paise: number; root_cause: string | null; customer_id: string | null }[]
   >;

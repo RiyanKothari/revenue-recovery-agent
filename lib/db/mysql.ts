@@ -524,9 +524,26 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
     // --- conformance
 
+    async listAuditForEvent(revenueEventId: string): Promise<AuditRow[]> {
+      // Ascending and unbounded — see the Postgres implementation for why a
+      // trace must not be truncated.
+      const rows = await query<any>(
+        `select id, revenue_event_id, stage, detail, created_at
+           from audit_log where revenue_event_id = ? order by created_at asc`,
+        [revenueEventId]
+      );
+      return rows.map((r) => ({
+        id: r.id,
+        revenue_event_id: r.revenue_event_id,
+        stage: r.stage,
+        detail: typeof r.detail === "string" ? JSON.parse(r.detail) : (r.detail ?? {}),
+        created_at: iso(r.created_at),
+      }));
+    },
+
     async listDecisions(): Promise<DecisionRow[]> {
       const rows = await query<any>(
-        "select id, revenue_event_id, chosen_action, rationale, from_cache from agent_decisions"
+        "select id, revenue_event_id, chosen_action, rationale, from_cache, cache_key from agent_decisions"
       );
       return rows.map((r) => ({ ...r, from_cache: bool(r.from_cache) }));
     },
