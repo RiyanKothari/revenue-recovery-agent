@@ -74,7 +74,26 @@ export async function sendWhatsAppRetryNudge(params: {
   const data = await res.json();
 
   if (!res.ok) {
-    return { success: false, error: data?.error?.message ?? "unknown_whatsapp_error" };
+    /**
+     * A configuration failure is not a delivery failure, and conflating them
+     * is expensive. Meta's API Setup tokens expire in ~24 hours; when one
+     * does, every send in a batch returns the same OAuthException 190 and the
+     * dashboard fills with hundreds of "delivery failed" rows that look like
+     * customers not receiving messages. Tagging it distinctly means the
+     * audit trail says "our credential expired" instead of implicating the
+     * recipients.
+     */
+    const error = data?.error;
+    const expiredToken =
+      error?.code === 190 ||
+      /session has expired|access token.*expired/i.test(String(error?.message ?? ""));
+
+    return {
+      success: false,
+      error: expiredToken
+        ? "whatsapp_token_expired: regenerate WHATSAPP_ACCESS_TOKEN (Meta API Setup tokens last ~24h; a System User token does not expire)"
+        : error?.message ?? "unknown_whatsapp_error",
+    };
   }
 
   return { success: true, messageId: data?.messages?.[0]?.id };

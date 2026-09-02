@@ -10,8 +10,8 @@ import Anthropic from "@anthropic-ai/sdk";
  * more than it sounds: those are the paths under test, and swapping providers
  * must not touch them.
  *
- * Provider is chosen by which key is present, so the pipeline runs on
- * whichever one you have.
+ * Provider is chosen by DECISION_PROVIDER — explicitly, never by sniffing
+ * which keys happen to be present. See resolveProviderName below.
  */
 
 export interface ModelResponse {
@@ -310,24 +310,66 @@ const GEMINI_FALLBACK_CHAIN = [
 
 // --- selection -------------------------------------------------------------
 
+export type ProviderName = "anthropic" | "gemini";
+
 /**
- * Anthropic wins when both keys are present — it is the documented default
- * and the one the prompt was tuned against. Gemini is used when it is the
- * only key available.
+ * Which provider runs is stated, not inferred.
+ *
+ * The previous rule was "Anthropic wins when both keys are present", and it
+ * is the kind of default that costs you a demo. A key in .env.local is a
+ * credential, not an instruction to spend it: an Anthropic key on an account
+ * with no credit would have silently become the primary, returned a billing
+ * error on every event, and — because the decision engine correctly fails
+ * closed — escalated the entire batch to humans. The pipeline would have
+ * looked cautious rather than broken, which is the worst way to fail.
+ *
+ * So the provider is read from DECISION_PROVIDER, and when both keys are
+ * present without one, we refuse to guess.
  */
-export function resolveDecisionModel(env = process.env): DecisionModel {
-  if (env.ANTHROPIC_API_KEY) {
-    return withRetry(createAnthropicModel(env.ANTHROPIC_API_KEY, env.DECISION_MODEL));
+export function resolveProviderName(env = process.env): ProviderName {
+  const requested = env.DECISION_PROVIDER?.trim().toLowerCase();
+
+  if (requested) {
+    if (requested !== "anthropic" && requested !== "gemini") {
+      throw new Error(
+        `Unknown DECISION_PROVIDER "${requested}". Use "anthropic" or "gemini".`
+      );
+    }
+    const keyVar = requested === "anthropic" ? "ANTHROPIC_API_KEY" : "GEMINI_API_KEY";
+    if (!env[keyVar]) {
+      throw new Error(
+        `DECISION_PROVIDER=${requested} but ${keyVar} is not set in .env.local.`
+      );
+    }
+    return requested;
   }
 
-  if (env.GEMINI_API_KEY) {
-    const chain = env.DECISION_MODEL ? [env.DECISION_MODEL] : GEMINI_FALLBACK_CHAIN;
-    return withRetry(
-      withFallback(chain.map((m) => createGeminiModel(env.GEMINI_API_KEY!, m)))
+  const available: ProviderName[] = [];
+  if (env.ANTHROPIC_API_KEY) available.push("anthropic");
+  if (env.GEMINI_API_KEY) available.push("gemini");
+
+  if (available.length === 1) return available[0];
+
+  if (available.length > 1) {
+    throw new Error(
+      "Both ANTHROPIC_API_KEY and GEMINI_API_KEY are set. Set DECISION_PROVIDER=anthropic or gemini — this is not guessed, because picking the wrong one bills the wrong account and every failed call becomes a human escalation."
     );
   }
 
   throw new Error(
     "No decision model configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in .env.local — see docs/SETUP.md."
+  );
+}
+
+export function resolveDecisionModel(env = process.env): DecisionModel {
+  const provider = resolveProviderName(env);
+
+  if (provider === "anthropic") {
+    return withRetry(createAnthropicModel(env.ANTHROPIC_API_KEY!, env.DECISION_MODEL));
+  }
+
+  const chain = env.DECISION_MODEL ? [env.DECISION_MODEL] : GEMINI_FALLBACK_CHAIN;
+  return withRetry(
+    withFallback(chain.map((m) => createGeminiModel(env.GEMINI_API_KEY!, m)))
   );
 }

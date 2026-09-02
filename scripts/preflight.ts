@@ -299,6 +299,29 @@ async function checkAnthropic() {
   }
 }
 
+/**
+ * Meta reports an expired token as OAuthException code 190 with the real
+ * cause buried in a prose message ("Session has expired on ..."), and it
+ * arrives on EVERY Graph endpoint. Without naming it, the template check
+ * blames WHATSAPP_BUSINESS_ACCOUNT_ID and the send path records 400 separate
+ * delivery failures — both of which send you looking in the wrong place for
+ * a credential that simply timed out overnight.
+ *
+ * The tokens on the Meta app dashboard's API Setup tab last ~24 hours, so
+ * this is not an edge case; it is what happens to every demo the next day.
+ */
+export function readMetaError(body: any): { message: string; expiredToken: boolean } {
+  const error = body?.error;
+  const message = error?.message ?? "unknown Graph API error";
+  const expiredToken =
+    error?.code === 190 ||
+    /session has expired|access token.*expired/i.test(String(message));
+  return { message, expiredToken };
+}
+
+const TOKEN_FIX =
+  "Token expired. Meta's API Setup tokens last ~24h — regenerate it there for a quick demo, or create a System User token (Business Settings -> System Users -> Generate token, no expiry) so it survives judging day.";
+
 async function checkWhatsApp() {
   console.log("\nWhatsApp Cloud API");
 
@@ -319,15 +342,20 @@ async function checkWhatsApp() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       const body: any = await res.json();
+      const { message, expiredToken } = readMetaError(body);
       record({
         name: "phone number",
         status: res.ok ? "ok" : "fail",
         detail: res.ok
           ? `${body.display_phone_number ?? phoneId} (${body.verified_name ?? "unverified"})`
-          : body?.error?.message ?? `HTTP ${res.status}`,
+          : expiredToken
+            ? "access token expired"
+            : message,
         fix: res.ok
           ? undefined
-          : "Access tokens from the Meta app dashboard expire in ~24h — regenerate or use a permanent token",
+          : expiredToken
+            ? TOKEN_FIX
+            : "Check WHATSAPP_PHONE_NUMBER_ID on the Meta app dashboard's API Setup tab",
       });
     } catch (err: any) {
       record({ name: "phone number", status: "fail", detail: err?.message ?? "unreachable" });
@@ -385,11 +413,14 @@ async function checkWhatsAppTemplate(token: string | undefined) {
     const body: any = await res.json();
 
     if (!res.ok) {
+      const { message, expiredToken } = readMetaError(body);
       record({
         name: "template payment_retry_nudge",
-        status: "fail",
-        detail: body?.error?.message ?? `HTTP ${res.status}`,
-        fix: "Check WHATSAPP_BUSINESS_ACCOUNT_ID is the WhatsApp Business Account id, not the app id",
+        status: expiredToken ? "skip" : "fail",
+        detail: expiredToken ? "cannot verify — access token expired" : message,
+        fix: expiredToken
+          ? TOKEN_FIX
+          : "Check WHATSAPP_BUSINESS_ACCOUNT_ID is the WhatsApp Business Account id, not the app id",
       });
       return;
     }
