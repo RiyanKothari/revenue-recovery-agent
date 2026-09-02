@@ -50,3 +50,28 @@ test("rejects a malformed short signature without throwing", () => {
 test("rejects an empty signature without throwing", () => {
   assert.equal(verifyRazorpaySignature(BODY, "", SECRET), false);
 });
+
+/**
+ * An unconfigured secret is the dangerous case, not an exotic one: the
+ * .env.local template ships this variable blank, so "not filled in yet" is
+ * the default state of a fresh clone.
+ */
+test("refuses every webhook when the secret is an empty string", () => {
+  // crypto.createHmac("sha256", "") does NOT throw — it computes a valid
+  // HMAC with an empty key. Without an explicit refusal, anyone able to
+  // compute that HMAC (i.e. anyone) produces a signature this function
+  // accepts: a complete authentication bypass on the pipeline's only door.
+  const body = JSON.stringify({ event: "payment.failed" });
+  const forged = crypto.createHmac("sha256", "").update(body).digest("hex");
+
+  assert.equal(verifyRazorpaySignature(body, forged, ""), false);
+});
+
+test("refuses every webhook when the secret is undefined", () => {
+  const body = JSON.stringify({ event: "payment.failed" });
+  assert.equal(verifyRazorpaySignature(body, "anything", undefined), false);
+});
+
+test("an empty secret is refused even when the signature is also empty", () => {
+  assert.equal(verifyRazorpaySignature("{}", "", ""), false);
+});

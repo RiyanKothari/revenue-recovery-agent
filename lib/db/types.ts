@@ -200,7 +200,15 @@ export interface RecoveryDb {
   >;
   listStoppingRules(): Promise<{ revenue_event_id: string; reason: string }[]>;
   listDecisionEventIds(): Promise<string[]>;
-  listAssignments(): Promise<{ revenue_event_id: string; arm: string }[]>;
+  /**
+   * Includes the probability estimated at assignment time. The replay engine
+   * needs the number the pipeline actually used, not one recomputed today
+   * against different observed stats — a counterfactual that silently swaps
+   * its own inputs is comparing two things at once.
+   */
+  listAssignments(): Promise<
+    { revenue_event_id: string; arm: string; recovery_probability: number | null }[]
+  >;
   listRecentAudit(limit: number, stages?: string[]): Promise<AuditRow[]>;
   /**
    * Every audit row for one event, oldest first — the trace view reads the

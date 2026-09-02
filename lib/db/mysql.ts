@@ -476,9 +476,19 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
     },
 
     async listAssignments() {
-      return query<{ revenue_event_id: string; arm: string }>(
-        "select revenue_event_id, arm from experiment_assignments"
+      const rows = await query<any>(
+        "select revenue_event_id, arm, recovery_probability from experiment_assignments"
       );
+      return rows.map((r) => ({
+        revenue_event_id: r.revenue_event_id,
+        arm: r.arm,
+        // Numeric columns come back as strings on both drivers often enough
+        // that coercing here is cheaper than debugging a silent NaN later.
+        recovery_probability:
+          r.recovery_probability === null || r.recovery_probability === undefined
+            ? null
+            : Number(r.recovery_probability),
+      }));
     },
 
     async listRecentAudit(limit, stages): Promise<AuditRow[]> {

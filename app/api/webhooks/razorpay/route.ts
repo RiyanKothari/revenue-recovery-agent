@@ -41,14 +41,27 @@ const REFUND_OR_DISPUTE_EVENTS = new Set([
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
   const signature = req.headers.get("x-razorpay-signature");
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET!;
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
   if (!verifyRazorpaySignature(rawBody, signature, secret)) {
     return NextResponse.json({ error: "invalid_signature" }, { status: 400 });
   }
 
-  const payload = JSON.parse(rawBody);
-  const eventType = payload.event as string;
+  /**
+   * A correctly-signed body is authenticated, not well-formed. An unguarded
+   * parse throws before the route's own error handling, and Next answers an
+   * uncaught throw with an empty body — the exact failure that killed the
+   * first batch run, where the client had nothing to parse and no reason to
+   * log. Malformed input gets a reason.
+   */
+  let payload: any;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: "malformed_json" }, { status: 400 });
+  }
+
+  const eventType = payload?.event as string;
   const paymentEntity = payload.payload?.payment?.entity;
 
   // A successful payment on an order we previously saw fail is what turns
