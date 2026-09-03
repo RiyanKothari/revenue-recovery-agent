@@ -233,6 +233,8 @@ export default function DashboardPage() {
                     className="rr-chip rr-chip--neutral"
                     style={{ cursor: "pointer" }}
                     onClick={() => setPaused((p) => !p)}
+                    aria-pressed={paused}
+                    aria-label={paused ? "Resume the live feed" : "Pause the live feed"}
                   >
                     {paused ? "Resume" : "Pause"}
                   </button>
@@ -247,7 +249,13 @@ export default function DashboardPage() {
                   agent respond.
                 </div>
               ) : (
-                <div className="rr-feed">
+                /**
+                 * Polite, never assertive. This region updates every few
+                 * seconds, and an assertive live region would interrupt a
+                 * screen reader on each poll — making the most important
+                 * panel on the page the reason someone cannot use it.
+                 */
+                <div className="rr-feed" aria-live="polite" aria-atomic="false">
                   {rows.map((row) => (
                     <FeedRowCard key={row.id} row={row} />
                   ))}

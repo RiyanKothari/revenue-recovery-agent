@@ -46,18 +46,20 @@ function mask(value: string | undefined): string {
  *
  *   npm run preflight                        -- everything
  *   npm run preflight database razorpay      -- just those
- *   npm run preflight --skip anthropic       -- everything else
+ *   npm run preflight --skip model           -- everything else
  */
 const TEMPLATE_NAME = "payment_retry_nudge";
 
-const SERVICES = ["database", "razorpay", "mcp", "anthropic", "whatsapp"] as const;
+const SERVICES = ["database", "razorpay", "mcp", "model", "whatsapp"] as const;
 type Service = (typeof SERVICES)[number];
 
 const SERVICE_VARS: Record<Service, string[]> = {
   database: ["DATABASE_URL"],
   razorpay: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"],
   mcp: ["RAZORPAY_MCP_MERCHANT_TOKEN"],
-  anthropic: ["ANTHROPIC_API_KEY"],
+  // Which key is required depends on DECISION_PROVIDER, so it is checked
+  // inside checkDecisionModel rather than declared here.
+  model: [],
   whatsapp: [], // optional — the pipeline runs without it, actions just record as failed
 };
 
@@ -261,41 +263,137 @@ async function checkMerchantToken() {
   }
 }
 
-async function checkAnthropic() {
-  console.log("\nAnthropic");
+/**
+ * Checks the provider that will actually run, and only that one.
+ *
+ * This used to probe Anthropic unconditionally, which was wrong twice over:
+ * it reported a blocking failure for a provider the pipeline was not
+ * configured to use, and it never checked the one it was — so the single
+ * dependency the demo depends on went unverified while an unused key
+ * generated the only red line on the report.
+ *
+ * It also spent money, or tried to. Probing an API that DECISION_PROVIDER
+ * has not selected bills an account the operator did not choose to bill, and
+ * "the preflight did it" is a poor reason to find a charge on a card.
+ */
+async function checkDecisionModel() {
+  const { resolveProviderName } = await import("../lib/decision-model");
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    record({ name: "api key", status: "skip", detail: "not set" });
+  let provider: "anthropic" | "gemini";
+  try {
+    provider = resolveProviderName();
+  } catch (err: any) {
+    console.log("\nDecision model");
+    record({
+      name: "provider",
+      status: "fail",
+      detail: err?.message ?? "not configured",
+      fix: "Set DECISION_PROVIDER=gemini or anthropic in .env.local, with the matching key",
+    });
     return;
   }
 
+  console.log(`\nDecision model (${provider})`);
+  record({ name: "provider", status: "ok", detail: `DECISION_PROVIDER=${provider}` });
+
+  if (provider === "anthropic") {
+    await probeAnthropic();
+    return;
+  }
+
+  await probeGemini();
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    // Present but deliberately unused. Said out loud so nobody spends an
+    // hour wondering why a configured key never appears in the audit trail.
+    record({
+      name: "ANTHROPIC_API_KEY",
+      status: "skip",
+      detail: "set but unused — DECISION_PROVIDER selects gemini",
+    });
+  }
+}
+
+async function probeAnthropic() {
   try {
     const Anthropic = (await import("@anthropic-ai/sdk")).default;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
     // Smallest call that still proves the key works AND this model is
     // reachable on this account. Costs a fraction of a cent.
+    const model = process.env.DECISION_MODEL ?? "claude-sonnet-5";
     const res = await client.messages.create({
-      model: "claude-sonnet-5",
+      model,
       max_tokens: 1,
       messages: [{ role: "user", content: "hi" }],
     });
 
-    record({
-      name: "claude-sonnet-5",
-      status: "ok",
-      detail: `reachable (stop_reason=${res.stop_reason})`,
-    });
+    record({ name: model, status: "ok", detail: `reachable (stop_reason=${res.stop_reason})` });
   } catch (err: any) {
     const msg = err?.message ?? "request failed";
     record({
-      name: "claude-sonnet-5",
+      name: "anthropic",
       status: "fail",
       detail: msg,
       fix: /credit|balance/i.test(msg)
         ? "Add credits at console.anthropic.com — the API has no free tier"
-        : "Check ANTHROPIC_API_KEY is a valid key from console.anthropic.com",
+        : /workspace/i.test(msg)
+          ? "This is an identity-linked key: it needs a workspace id, or use a standard API key"
+          : "Check ANTHROPIC_API_KEY is a valid key from console.anthropic.com",
     });
+  }
+}
+
+/**
+ * Gemini's free tier is quota-limited per model per day, and the pipeline
+ * falls through a chain when one is exhausted. Listing models proves the key
+ * authenticates without spending a generate request from the quota the batch
+ * is going to need.
+ */
+async function probeGemini() {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    record({ name: "GEMINI_API_KEY", status: "fail", detail: "not set" });
+    return;
+  }
+
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+      headers: { "x-goog-api-key": key },
+    });
+    const body: any = await res.json();
+
+    if (!res.ok) {
+      record({
+        name: "gemini",
+        status: "fail",
+        detail: body?.error?.message ?? `HTTP ${res.status}`,
+        fix: "Check GEMINI_API_KEY at aistudio.google.com/apikey",
+      });
+      return;
+    }
+
+    const names: string[] = (body?.models ?? []).map((m: any) =>
+      String(m.name ?? "").replace("models/", "")
+    );
+    const wanted = process.env.DECISION_MODEL ?? "gemini-3.6-flash";
+
+    record({
+      name: "api key",
+      status: "ok",
+      detail: `authenticates — ${names.length} models visible`,
+    });
+
+    record({
+      name: wanted,
+      status: names.includes(wanted) ? "ok" : "warn",
+      detail: names.includes(wanted) ? "available" : "not listed for this key",
+      fix: names.includes(wanted)
+        ? undefined
+        : "The fallback chain covers this, but the primary model will be skipped on every call",
+    });
+  } catch (err: any) {
+    record({ name: "gemini", status: "fail", detail: err?.message ?? "unreachable" });
   }
 }
 
@@ -489,7 +587,7 @@ async function main() {
   if (services.includes("database")) await checkDatabase();
   if (services.includes("razorpay")) await checkRazorpayRest();
   if (services.includes("mcp")) await checkMerchantToken();
-  if (services.includes("anthropic")) await checkAnthropic();
+  if (services.includes("model")) await checkDecisionModel();
   if (services.includes("whatsapp")) await checkWhatsApp();
 
   const failures = results.filter((r) => r.status === "fail");
