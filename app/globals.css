@@ -897,3 +897,51 @@ a:focus-visible {
   .rr-stat { padding: 12px 12px 12px 16px; }
   .rr-stat__label { font-size: 9.5px; }
 }
+
+
+/* --- Charts ------------------------------------------------------------- */
+
+.rr-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.rr-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.rr-meter {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--rr-sunken);
+  border: 1px solid var(--rr-border);
+  overflow: hidden;
+}
+
+.rr-meter__fill {
+  height: 100%;
+  border-radius: 4px 0 0 4px;
+  background: var(--rr-gradient);
+  transition: width 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Said in words on the bar itself, not only in a tooltip nobody hovers. */
+.rr-meter__note {
+  position: absolute;
+  right: 6px;
+  top: -1px;
+  font-size: 8.5px;
+  color: var(--rr-text-3);
+  line-height: 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rr-meter__fill { transition: none; }
+}

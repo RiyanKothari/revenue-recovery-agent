@@ -4,6 +4,7 @@ import { apiError } from "@/lib/api-errors";
 import { assessPower, computeLift, type ArmOutcome } from "@/lib/experiment";
 import { DEFAULT_POLICY } from "@/lib/policy";
 import { bucketOutcomes } from "@/lib/outcome-buckets";
+import { armSeries, causePerformance, dailySeries } from "@/lib/analytics";
 
 // Without this Next prerenders this handler at build time and the dashboard
 // polls a frozen snapshot forever.
@@ -145,6 +146,22 @@ export async function GET() {
     stops: auditExceptions,
   });
 
+  /**
+   * The two questions the ledger cannot answer: is this getting better over
+   * time, and which failure types repay the effort. Both became answerable
+   * only once events carried real arrival times spread across a week.
+   */
+  const analyticsInput = {
+    events: events.map((e) => ({
+      id: e.id,
+      amountPaise: e.amount_paise,
+      rootCause: e.root_cause,
+      receivedAt: e.received_at,
+    })),
+    recoveredIds: new Set(recoveredEvents.map((o) => o.revenue_event_id)),
+    armByEvent: new Map(assignments.map((a) => [a.revenue_event_id, a.arm])),
+  };
+
   return NextResponse.json({
     total_events: events.length,
     total_at_risk_paise: totalAtRiskPaise,
@@ -162,6 +179,10 @@ export async function GET() {
 
     // Rupee partition of the batch — see bucketOutcomes for the ordering rule.
     outcome_buckets: outcomeBuckets.buckets,
+
+    daily: dailySeries(analyticsInput),
+    by_cause_performance: causePerformance(analyticsInput),
+    arm_series: armSeries(analyticsInput),
 
     // Measured causal impact, not attribution.
     experiment: {

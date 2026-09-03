@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { MoneyRiver, type Bucket } from "./money-river";
+import { CausePerformance, RecoveryTrend, type ArmPoint, type CauseRow, type DayPoint } from "./trend";
 import {
   ACTION_LABELS,
   Chip,
@@ -45,6 +46,9 @@ interface Summary {
   timed_recoveries: number;
   synthetic_events: number;
   outcome_buckets: Bucket[];
+  daily: DayPoint[];
+  by_cause_performance: CauseRow[];
+  arm_series: ArmPoint[];
   exceptions: { revenue_event_id: string; reason: string }[];
   experiment: {
     policy_version: string;
@@ -233,6 +237,12 @@ export default function DashboardPage() {
           />
         </div>
 
+        {summary && summary.daily.length > 1 && (
+          <div style={{ marginBottom: 20 }}>
+            <RecoveryTrend daily={summary.daily} />
+          </div>
+        )}
+
         <div className="rr-columns">
           <div>
             <div className="rr-card" style={{ padding: 16 }}>
@@ -278,7 +288,12 @@ export default function DashboardPage() {
             {conformance && <ConformanceCard data={conformance} />}
             {conformance && <RulesCostCard data={conformance} />}
             {cache && <CacheCard stats={cache} />}
-            {summary && <RootCauseCard byCause={summary.by_root_cause} />}
+            {summary && (
+              <CausePerformance
+                rows={summary.by_cause_performance}
+                labelFor={(cause) => label(ROOT_CAUSE_LABELS, cause)}
+              />
+            )}
             <ExceptionsCard unresolved={unresolved} declined={declined} />
           </div>
         </div>
@@ -685,37 +700,6 @@ function CacheCard({ stats }: { stats: CacheStats }) {
   );
 }
 
-function RootCauseCard({
-  byCause,
-}: {
-  byCause: Record<string, { count: number; amount_paise: number }>;
-}) {
-  const entries = Object.entries(byCause).sort((a, b) => b[1].amount_paise - a[1].amount_paise);
-  const max = Math.max(1, ...entries.map(([, s]) => s.amount_paise));
-
-  return (
-    <div className="rr-card">
-      <SectionTitle>By root cause</SectionTitle>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {entries.length === 0 && (
-          <span style={{ fontSize: 12, color: "var(--rr-text-3)" }}>Nothing classified yet.</span>
-        )}
-        {entries.map(([cause, stats]) => (
-          <div key={cause} className="rr-cause">
-            <div
-              className="rr-cause__fill"
-              style={{ width: `${(stats.amount_paise / max) * 100}%` }}
-            />
-            <span>{label(ROOT_CAUSE_LABELS, cause)}</span>
-            <span className="rr-mono" style={{ color: "var(--rr-text-2)" }}>
-              {stats.count} · {rupees(stats.amount_paise)}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /**
  * Two lists, deliberately separate. A holdout control and a negative-EV skip
