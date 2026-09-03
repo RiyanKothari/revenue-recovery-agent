@@ -117,3 +117,51 @@ test("amounts are positive and in paise", () => {
     assert.ok(amount > 0);
   }
 });
+
+/**
+ * A batch whose measured result changes without any code changing cannot be
+ * used to check whether a code change moved it — which is most of what the
+ * batch is for. One re-run had the lift cross zero and the dashboard report
+ * the effect as not established, on the strength of a different draw alone.
+ */
+test("the same batch size produces byte-identical events on every run", () => {
+  const a = generateBatch(120);
+  const b = generateBatch(120);
+  assert.deepEqual(a, b);
+});
+
+test("failure reasons and amounts are stable, not just the customer pool", () => {
+  const a = generateBatch(60).map((e) => {
+    const entity = e.body.payload.payment.entity;
+    return `${entity.error_code}|${entity.error_description}|${entity.amount}`;
+  });
+  const b = generateBatch(60).map((e) => {
+    const entity = e.body.payload.payment.entity;
+    return `${entity.error_code}|${entity.error_description}|${entity.amount}`;
+  });
+  assert.deepEqual(a, b);
+});
+
+test("different events still differ — determinism is not uniformity", () => {
+  // A seed applied wrongly can make every event identical, which would be
+  // reproducible and useless.
+  const batch = generateBatch(200);
+  const amounts = new Set(batch.map((e) => e.body.payload.payment.entity.amount));
+  const reasons = new Set(batch.map((e) => e.body.payload.payment.entity.error_code));
+
+  assert.ok(amounts.size > 50, `expected varied amounts, got ${amounts.size}`);
+  assert.ok(reasons.size > 1, `expected varied failure reasons, got ${reasons.size}`);
+});
+
+test("the whole weighted distribution is still reachable", () => {
+  // Seeding must not collapse the tail — the deliberately non-recoverable
+  // fraud slice is 3% and the guardrail demo depends on it appearing.
+  const descriptions = new Set(
+    generateBatch(400).map((e) => e.body.payload.payment.entity.error_description)
+  );
+  assert.ok(
+    [...descriptions].some((d) => /fraud/i.test(String(d))),
+    "the non-recoverable slice never appeared"
+  );
+  assert.ok(descriptions.size >= 5, `expected most reasons to appear, got ${descriptions.size}`);
+});

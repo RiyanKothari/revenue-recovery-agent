@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { apiError } from "@/lib/api-errors";
-import { computeLift, type ArmOutcome } from "@/lib/experiment";
+import { assessPower, computeLift, type ArmOutcome } from "@/lib/experiment";
 import { DEFAULT_POLICY } from "@/lib/policy";
 import { bucketOutcomes } from "@/lib/outcome-buckets";
 
@@ -109,6 +109,13 @@ export async function GET() {
   const lift = computeLift(arms.treated, arms.control);
 
   /**
+   * Whether this experiment could have detected the effect at all. Without
+   * it "not significant" reads as "the agent did not work" when it usually
+   * means the holdout was never large enough to tell.
+   */
+  const power = assessPower(arms.treated, arms.control);
+
+  /**
    * Whether this batch is synthetic, so the dashboard can say so.
    *
    * Synthetic recoveries are generated from a stated assumption (see
@@ -163,6 +170,7 @@ export async function GET() {
       treated: arms.treated,
       control: arms.control,
       lift,
+      power,
     },
     exceptions: auditExceptions.map((e) => ({
       revenue_event_id: e.revenue_event_id,

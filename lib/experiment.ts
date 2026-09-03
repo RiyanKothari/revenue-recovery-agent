@@ -127,3 +127,79 @@ export function computeLift(treated: ArmOutcome, control: ArmOutcome): LiftResul
       : undefined,
   };
 }
+
+
+/**
+ * The smallest effect this experiment could actually have detected.
+ *
+ * Without it, "not significant" is ambiguous in the worst way: it reads as
+ * "the agent did not work" when it often means "this holdout was never large
+ * enough to tell". A 10% holdout of four hundred events yields about thirty
+ * control observations, and thirty observations cannot resolve a fifteen
+ * point difference — the experiment was underpowered before it ran, which is
+ * a fact about the design rather than a finding about the agent.
+ *
+ * Reporting the minimum detectable effect alongside the result turns a
+ * confusing null into a specific, actionable statement: either the effect is
+ * smaller than this, or the holdout needs to be bigger. Anyone reading the
+ * panel can then tell which question the data has answered.
+ *
+ * Standard two-proportion power calculation at 80% power, alpha 0.05
+ * two-sided, evaluated at the control arm's observed rate.
+ */
+const Z_ALPHA = 1.959964; // two-sided 95%
+const Z_POWER = 0.8416212; // 80% power
+
+export interface PowerResult {
+  /** Smallest true difference detectable at 80% power, in percentage points. */
+  minimumDetectableEffectPp: number | null;
+  /** Control observations needed to detect the effect actually observed. */
+  controlNeededForObserved: number | null;
+  /** True when the arms are large enough to resolve the observed difference. */
+  adequatelyPowered: boolean;
+}
+
+export function assessPower(treated: ArmOutcome, control: ArmOutcome): PowerResult {
+  if (treated.n === 0 || control.n === 0) {
+    return {
+      minimumDetectableEffectPp: null,
+      controlNeededForObserved: null,
+      adequatelyPowered: false,
+    };
+  }
+
+  const p = control.converted / control.n;
+  const variance = p * (1 - p);
+
+  // Harmonic mean of the arm sizes — the effective sample size when the two
+  // are unequal, which they always are with a small holdout.
+  const nEff = (2 * treated.n * control.n) / (treated.n + control.n);
+
+  if (nEff <= 0 || variance <= 0) {
+    return {
+      minimumDetectableEffectPp: null,
+      controlNeededForObserved: null,
+      adequatelyPowered: false,
+    };
+  }
+
+  const mde = (Z_ALPHA + Z_POWER) * Math.sqrt((2 * variance) / nEff);
+
+  const observed = Math.abs(treated.converted / treated.n - p);
+  const ratio = treated.n / control.n;
+
+  // Control observations required to detect the difference actually seen,
+  // holding the current allocation ratio.
+  const needed =
+    observed > 0
+      ? Math.ceil(
+          (((Z_ALPHA + Z_POWER) ** 2) * variance * (1 + 1 / ratio)) / observed ** 2
+        )
+      : null;
+
+  return {
+    minimumDetectableEffectPp: mde * 100,
+    controlNeededForObserved: needed,
+    adequatelyPowered: needed !== null && control.n >= needed,
+  };
+}

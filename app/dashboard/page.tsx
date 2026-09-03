@@ -60,6 +60,11 @@ interface Summary {
       significant: boolean;
       caveat?: string;
     };
+    power: {
+      minimumDetectableEffectPp: number | null;
+      controlNeededForObserved: number | null;
+      adequatelyPowered: boolean;
+    };
   };
 }
 
@@ -435,6 +440,24 @@ function LiftCard({ experiment }: { experiment: Summary["experiment"] }) {
             {lift.caveat ??
               "Recovery the agent caused, over what these events would have returned untouched."}
           </div>
+
+          {/* Why a null result is null. An underpowered experiment reporting
+              "not significant" is a fact about the holdout's size, not a
+              finding about the agent, and the two must not look the same. */}
+          {!lift.significant && experiment.power.minimumDetectableEffectPp != null && (
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--rr-amber)",
+                marginTop: 10,
+                lineHeight: 1.55,
+              }}
+            >
+              {`Underpowered: with ${control.n} control events this holdout can only resolve an effect of ${experiment.power.minimumDetectableEffectPp.toFixed(1)}pp or larger.`}
+              {experiment.power.controlNeededForObserved != null &&
+                ` Confirming the observed ${Math.abs(lift.absoluteLiftPp).toFixed(1)}pp would need about ${experiment.power.controlNeededForObserved} control events.`}
+            </div>
+          )}
         </>
       )}
     </div>

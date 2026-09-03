@@ -19,18 +19,56 @@ const FAILURE_REASONS = [
   { code: "SERVER_ERROR", desc: "Suspected fraud, transaction blocked for review.", method: "card", weight: 0.03 }, // deliberately non-recoverable
 ];
 
-function weightedPick<T extends { weight: number }>(items: T[]): T {
+/**
+ * Deterministic pseudo-randomness, seeded per event.
+ *
+ * The customer pool was already derived by modulo "so a re-run produces the
+ * same batch and the same measured numbers" — but the failure mix, the
+ * amounts and the simulated conversions all ran on Math.random(), so that
+ * claim was false and the numbers moved every run. On one re-run the
+ * measured lift crossed zero and the dashboard reported the effect as not
+ * established, on the strength of nothing but a different random draw.
+ *
+ * That matters beyond demo stability. A batch whose measured result changes
+ * without any code changing cannot be used to check whether a code change
+ * moved it, which is most of what the batch is for.
+ *
+ * mulberry32 — small, fast, and good enough for a synthetic fixture. Not for
+ * anything that needs cryptographic randomness, and nothing here does.
+ */
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Stable 32-bit hash, so a string id can seed the generator above. */
+export function hashSeed(value: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function weightedPick<T extends { weight: number }>(items: T[], roll: number): T {
   const total = items.reduce((s, i) => s + i.weight, 0);
-  let r = Math.random() * total;
+  let r = roll * total;
   for (const item of items) {
     if ((r -= item.weight) <= 0) return item;
   }
   return items[items.length - 1];
 }
 
-function randomAmountPaise(): number {
+function amountPaiseFrom(rand: () => number): number {
   // ₹150 – ₹15,000, log-ish distribution so most failures are small tickets
-  return Math.round((150 + Math.random() * Math.random() * 14850) * 100);
+  return Math.round((150 + rand() * rand() * 14850) * 100);
 }
 
 function fakePhone(i: number): string {
@@ -122,8 +160,10 @@ export function syntheticCreatedAt(i: number, size: number, now = Date.now()): n
 
 export function generateBatch(size = 55) {
   return Array.from({ length: size }, (_, i) => {
-    const reason = weightedPick(FAILURE_REASONS);
-    const amount = randomAmountPaise();
+    // Seeded on the index, so event i is the same event on every run.
+    const rand = seeded(hashSeed(`synthetic|${size}|${i}`));
+    const reason = weightedPick(FAILURE_REASONS, rand());
+    const amount = amountPaiseFrom(rand);
     const paymentId = `pay_synthetic_${1000 + i}`;
     const customerIndex = customerIndexFor(i, size);
 
@@ -216,9 +256,11 @@ const ASSUMED_CONTROL_CONVERSION = 0.19;
  * comfortably inside the 24h attribution window. Derived from the event id
  * rather than random so a re-run produces the same measured averages.
  */
-export function simulatedRecoveryAt(eventId: string, failedAtIso: string): number {
+export function simulatedRecoveryAt(stableId: string, failedAtIso: string): number {
+  // Keyed on a value that survives a re-run — a database-generated row id
+  // would change every time and reproduce nothing.
   let hash = 0;
-  for (const ch of eventId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  for (const ch of stableId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
 
   const minutes = 20 + (hash % 1180); // 20 min .. ~20 h
   const millis = new Date(failedAtIso).getTime() + minutes * 60_000;
@@ -252,10 +294,19 @@ async function simulateOutcomes() {
     const arm = armByEvent.get(event.id);
     const rate =
       arm === "control" ? ASSUMED_CONTROL_CONVERSION : ASSUMED_TREATED_CONVERSION;
-    if (Math.random() >= rate) continue;
-
     const orderId = event.razorpay_order_id;
     if (!orderId) continue;
+
+    /**
+     * Seeded on the ORDER id, not the row id.
+     *
+     * `event.id` is a UUID the database generates on insert, so it is
+     * different on every run — seeding on it would have looked deterministic
+     * while reproducing nothing. The synthetic order id is derived from the
+     * event's index in the batch and is therefore stable across runs, which
+     * is the property this actually needs.
+     */
+    if (seeded(hashSeed(`outcome|${orderId}`))() >= rate) continue;
 
     const body = JSON.stringify({
       event: "order.paid",
@@ -277,7 +328,7 @@ async function simulateOutcomes() {
              * durations, and spread across the window so "average time to
              * recovery" has a distribution rather than a constant.
              */
-            created_at: simulatedRecoveryAt(event.id, event.received_at),
+            created_at: simulatedRecoveryAt(orderId, event.received_at),
           },
         },
       },

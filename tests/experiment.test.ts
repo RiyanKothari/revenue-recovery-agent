@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assignArm, computeLift, type ArmOutcome } from "../lib/experiment";
+import { assignArm, assessPower, computeLift, type ArmOutcome } from "../lib/experiment";
 import { DEFAULT_POLICY, type RecoveryPolicy } from "../lib/policy";
 
 /**
@@ -140,4 +140,66 @@ test("handles a negative lift without breaking", () => {
 
   assert.ok(lift.absoluteLiftPp < 0);
   assert.ok(lift.incrementalPaise! < 0);
+});
+
+/**
+ * "Not significant" is ambiguous in the worst way — it reads as "the agent
+ * did not work" when it usually means "this holdout was never big enough to
+ * tell". These assertions pin the difference.
+ */
+test("a small holdout reports a large minimum detectable effect", () => {
+  const power = assessPower(
+    { n: 270, converted: 92, recoveredPaise: 0 },
+    { n: 30, converted: 5, recoveredPaise: 0 }
+  );
+
+  assert.ok(power.minimumDetectableEffectPp !== null);
+  // Thirty control observations cannot resolve a fifteen point difference.
+  assert.ok(
+    power.minimumDetectableEffectPp! > 15,
+    `expected a large MDE, got ${power.minimumDetectableEffectPp}`
+  );
+  assert.equal(power.adequatelyPowered, false);
+});
+
+test("a large holdout resolves the same effect", () => {
+  const power = assessPower(
+    { n: 1400, converted: 476, recoveredPaise: 0 },
+    { n: 600, converted: 114, recoveredPaise: 0 }
+  );
+
+  assert.ok(power.minimumDetectableEffectPp! < 15);
+  assert.equal(power.adequatelyPowered, true);
+});
+
+test("it says how many control observations the observed effect would need", () => {
+  const power = assessPower(
+    { n: 270, converted: 92, recoveredPaise: 0 },
+    { n: 30, converted: 5, recoveredPaise: 0 }
+  );
+
+  assert.ok(power.controlNeededForObserved !== null);
+  assert.ok(
+    power.controlNeededForObserved! > 30,
+    "an underpowered arm must ask for more than it has"
+  );
+});
+
+test("an empty arm reports no power rather than a misleading zero", () => {
+  // Zero would read as "any effect is detectable", the exact opposite of true.
+  const power = assessPower(
+    { n: 0, converted: 0, recoveredPaise: 0 },
+    { n: 0, converted: 0, recoveredPaise: 0 }
+  );
+
+  assert.equal(power.minimumDetectableEffectPp, null);
+  assert.equal(power.adequatelyPowered, false);
+});
+
+test("a control arm that never converts does not divide by zero", () => {
+  const power = assessPower(
+    { n: 100, converted: 30, recoveredPaise: 0 },
+    { n: 40, converted: 0, recoveredPaise: 0 }
+  );
+  assert.equal(power.minimumDetectableEffectPp, null);
 });
