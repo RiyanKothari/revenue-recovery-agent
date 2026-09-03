@@ -21,7 +21,12 @@
 
   --rr-text: #e8edf4;
   --rr-text-2: #9ba6b4;
-  --rr-text-3: #65707e;
+  /* Lightened from #65707e, which measured 3.73:1 on the card surface —
+     below the 4.5:1 AA minimum, and used for the stat labels, sub-captions
+     and row ids, all of which are small text where the full ratio applies.
+     This measures 5.01:1. The design spec called for verifying exactly this
+     pair and the check had never actually been run. */
+  --rr-text-3: #7a8593;
 
   --rr-blue: #3395ff;
   --rr-blue-dim: rgba(51, 149, 255, 0.14);
@@ -784,4 +789,111 @@ body {
   .rr-dot,
   .rr-particle { animation: none; }
   .rr-bar__fill { transition: none; }
+}
+
+
+/* --- Loading -----------------------------------------------------------
+   A skeleton means "not here yet"; an em dash means "known to be absent".
+   Collapsing the two would let a still-loading figure read as a measured
+   nothing, which on this page is the single most misleading thing a number
+   can do. */
+@keyframes rr-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.rr-skeleton {
+  display: inline-block;
+  min-width: 96px;
+  height: 1em;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--rr-surface-2) 25%,
+    var(--rr-border-strong) 50%,
+    var(--rr-surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: rr-shimmer 1.4s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+.rr-skeleton--sub { min-width: 120px; height: 0.8em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rr-skeleton { animation: none; }
+}
+
+/* Focus is visible on every interactive surface, not only the ones that
+   happen to be native controls. A ledger row is a link and has to look
+   focusable when tabbed to. */
+.rr-row:focus-visible,
+.rr-nav a:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--rr-blue);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+
+/* --- The river on a narrow screen ---------------------------------------
+   The Sankey is replaced rather than scaled. Below 900px its labels would
+   land at six pixels and the curves would overlap, and an unreadable chart
+   still occupies the space while claiming to inform. */
+.rr-river__stack { display: none; }
+
+@media (max-width: 900px) {
+  .rr-river { padding: 16px; min-height: 0; }
+  /* Scoped to beat the `.rr-river svg` rule above, which is a class plus an
+     element and therefore more specific than a bare class. */
+  .rr-river .rr-river__svg { display: none; }
+  .rr-river__label { position: static; transform: none; margin-bottom: 14px; }
+  .rr-river__stack { display: block; }
+}
+
+.rr-river__stackbar {
+  display: flex;
+  height: 26px;
+  border-radius: 6px;
+  overflow: hidden;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+
+.rr-river__seg { flex-basis: 0; min-width: 4px; }
+
+.rr-river__legend { display: flex; flex-direction: column; gap: 8px; }
+
+.rr-river__legendrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.rr-river__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.rr-river__legendlabel { color: var(--rr-text-2); }
+
+.rr-river__legendvalue {
+  margin-left: auto;
+  color: var(--rr-text);
+  white-space: nowrap;
+}
+
+/* Long rupee figures must shrink rather than clip — a truncated amount on a
+   money dashboard is worse than a smaller one. */
+.rr-stat__value {
+  font-size: clamp(17px, 4.4vw, 24px);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 420px) {
+  .rr-stat { padding: 12px 12px 12px 16px; }
+  .rr-stat__label { font-size: 9.5px; }
 }

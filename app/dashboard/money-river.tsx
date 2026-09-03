@@ -114,7 +114,52 @@ export function MoneyRiver({
         <div style={{ fontSize: 11, color: "var(--rr-text-3)", marginTop: 2 }}>at risk</div>
       </div>
 
-      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" preserveAspectRatio="xMidYMid meet">
+      {/*
+        Below 900px the Sankey is replaced, not shrunk.
+        Squeezed onto a phone its labels land at six pixels and the curves
+        collapse into one another — a chart that is present but unreadable is
+        worse than a simpler one that works, because it still occupies the
+        space and still claims to be informative. The stacked bar carries the
+        identical figures and the identical colour coding.
+        Both are rendered and CSS picks one, so there is no hydration
+        mismatch from measuring the viewport during render.
+      */}
+      <div className="rr-river__stack" aria-hidden="true">
+        <div className="rr-river__stackbar">
+          {shown.map((b) => (
+            <div
+              key={b.id}
+              className="rr-river__seg"
+              style={{
+                flexGrow: b.amountPaise,
+                background: TONE[b.id] ?? "#5a6472",
+              }}
+              title={b.label}
+            />
+          ))}
+        </div>
+        <div className="rr-river__legend">
+          {shown.map((b) => (
+            <div key={b.id} className="rr-river__legendrow">
+              <span
+                className="rr-river__swatch"
+                style={{ background: TONE[b.id] ?? "#5a6472" }}
+              />
+              <span className="rr-river__legendlabel">{b.label}</span>
+              <span className="rr-river__legendvalue rr-mono">
+                {`${rupees(b.amountPaise)} · ${b.events}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <svg
+        className="rr-river__svg"
+        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        role="img"
+        preserveAspectRatio="xMidYMid meet"
+      >
         <title>
           {`Of ${rupees(totalAtRiskPaise)} at risk: ` +
             shown.map((b) => `${b.label} ${rupees(b.amountPaise)}`).join(", ")}

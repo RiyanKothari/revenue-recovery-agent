@@ -12,7 +12,10 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata = {
-  title: "Revenue Recovery Agent",
+  title: {
+    default: "Revenue Recovery — Live",
+    template: "%s",
+  },
   description: "Track 03 — AI Revenue Recovery | Razorpay AI Buildathon",
 };
 

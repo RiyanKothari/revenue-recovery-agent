@@ -261,23 +261,47 @@ export function Stat({
   format,
   rail,
   sub,
+  loading = false,
 }: {
   label: string;
   value: number | null;
   format: (n: number) => string;
   rail: string;
   sub?: string;
+  /** True until the first response lands — distinct from a null value. */
+  loading?: boolean;
 }) {
   const animated = useCountUp(value);
 
+  /**
+   * Three states, kept distinct on purpose.
+   *
+   * A skeleton means "not here yet". An em dash means "we asked and there is
+   * no value". Zero means "measured, and it is zero". Collapsing any two of
+   * those lets a still-loading figure read as a measured nothing, which on
+   * this page is the most misleading thing a number can do — an agent that
+   * has recovered nothing and an agent whose data has not arrived look
+   * identical, and only one of them is a problem.
+   */
   return (
     <div className="rr-stat" style={{ ["--rail" as string]: rail }}>
       <div className="rr-stat__label">{statLabel}</div>
-      {/* Null renders as an em dash, never as zero: "we don't know yet" and
-          "nothing was recovered" are the two readings this page must never
-          let a reader confuse. */}
-      <div className="rr-stat__value rr-mono">{value == null ? "—" : format(animated)}</div>
-      {sub && <div className="rr-stat__sub">{sub}</div>}
+      <div className="rr-stat__value rr-mono">
+        {loading ? (
+          <span className="rr-skeleton" aria-label="Loading" />
+        ) : value == null ? (
+          "—"
+        ) : (
+          format(animated)
+        )}
+      </div>
+      {loading ? (
+        <div className="rr-stat__sub">
+          <span className="rr-skeleton rr-skeleton--sub" aria-hidden="true" />
+        </div>
+      ) : (
+        sub && <div className="rr-stat__sub">{sub}</div>
+      )}
     </div>
   );
 }

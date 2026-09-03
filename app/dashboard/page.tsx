@@ -189,6 +189,7 @@ export default function DashboardPage() {
         <div className="rr-stats">
           <Stat
             label="Total risk base"
+            loading={summary === null}
             value={summary ? summary.total_at_risk_paise : null}
             format={rupees}
             rail="var(--rr-blue)"
@@ -196,6 +197,7 @@ export default function DashboardPage() {
           />
           <Stat
             label="Recovered"
+            loading={summary === null}
             value={summary ? summary.recovered_paise : null}
             format={rupees}
             rail="var(--rr-green)"
@@ -207,6 +209,7 @@ export default function DashboardPage() {
           />
           <Stat
             label="Recovery rate"
+            loading={summary === null}
             value={summary ? summary.recovery_rate * 100 : null}
             format={(n) => `${n.toFixed(1)}%`}
             rail="var(--rr-amber)"
@@ -218,6 +221,7 @@ export default function DashboardPage() {
           />
           <Stat
             label="Avg resolution time"
+            loading={summary === null}
             value={summary?.avg_time_to_recovery_minutes ?? null}
             format={duration}
             rail="var(--rr-neutral)"
