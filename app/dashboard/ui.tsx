@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { Badge, Text } from "@razorpay/blade/components";
 
 /**
  * Shared chrome and formatting for the three Desk screens.
@@ -154,6 +155,27 @@ export function StatusPill({ status }: { status: FeedStatus }) {
   );
 }
 
+/**
+ * Status chips are Blade Badges.
+ *
+ * The layout and the three custom visuals are hand-built because Blade has no
+ * Sankey, no pipeline spine and no policy slider — but a status chip is
+ * exactly the primitive a design system exists to own, and reimplementing one
+ * in CSS would mean this project claims to be built on Razorpay's design
+ * system while quietly not using it.
+ *
+ * Blade's Badge takes text-only children, so anything richer stays on the CSS
+ * chip. Tones map onto Blade's semantic colours rather than raw hues, which
+ * is what keeps these consistent with the Badges elsewhere in the product.
+ */
+const BADGE_COLOR = {
+  green: "positive",
+  blue: "information",
+  amber: "notice",
+  red: "negative",
+  neutral: "neutral",
+} as const;
+
 export function Chip({
   tone,
   children,
@@ -161,6 +183,9 @@ export function Chip({
   tone: "green" | "blue" | "amber" | "red" | "neutral";
   children: React.ReactNode;
 }) {
+  if (typeof children === "string" || typeof children === "number") {
+    return <Badge color={BADGE_COLOR[tone]}>{String(children)}</Badge>;
+  }
   return <span className={`rr-chip rr-chip--${tone}`}>{children}</span>;
 }
 
@@ -173,7 +198,13 @@ export function SectionTitle({
 }) {
   return (
     <div className="rr-card__head">
-      <span className="rr-caps rr-mono">{children}</span>
+      {/* Blade's Text carries the type ramp; the wrapper adds only the ledger
+          register and the caps treatment, which are not Blade's to own. */}
+      <span className="rr-caps rr-mono">
+        <Text size="small" weight="semibold" color="surface.text.gray.muted">
+          {typeof children === "string" ? children.toUpperCase() : children}
+        </Text>
+      </span>
       {right}
     </div>
   );

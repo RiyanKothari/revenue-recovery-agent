@@ -415,12 +415,24 @@ body {
   to { opacity: 1; transform: none; }
 }
 
+/* Wraps rather than clips. Blade's Badge sizes to its label, and two of them
+   on one row ("Sent via WhatsApp" plus "simulated link") overflow a narrow
+   card — which truncated the status mid-word, turning the one part of the row
+   that has to be unambiguous into a guess. */
 .rr-row__top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   margin-bottom: 6px;
+}
+
+.rr-row__top > span:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
 .rr-row__id {

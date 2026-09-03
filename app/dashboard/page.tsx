@@ -318,7 +318,7 @@ function FeedRowCard({ row }: { row: FeedRow }) {
         <span className="rr-row__id rr-mono">
           {row.revenue_event_id.slice(0, 8).toUpperCase()}
         </span>
-        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           {fromCache && <Chip tone="neutral">reused</Chip>}
           {simulatedLink && <Chip tone="amber">simulated link</Chip>}
           <Chip tone={failed ? "red" : executed ? "green" : "blue"}>
