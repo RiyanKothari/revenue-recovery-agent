@@ -301,6 +301,17 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       );
     },
 
+    async countLiveLinks() {
+      // Simulated links are recorded with a `simulated_` id precisely so they
+      // can be excluded here without a second column.
+      const rows = await query<any>(
+        `select count(*) as n from recovery_actions
+          where razorpay_payment_link_id is not null
+            and razorpay_payment_link_id not like 'simulated_%%'`
+      );
+      return Number(rows[0]?.n ?? rows[0]?.count ?? 0);
+    },
+
     async getCustomerRetryHistory(customerId, limit) {
       const rows = await query<RetryAttempt>(
         `select ra.attempt_number, ra.channel, ra.status

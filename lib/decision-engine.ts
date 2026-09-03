@@ -121,6 +121,18 @@ export async function decide(
     maxTokens: 300,
   });
 
+  /**
+   * The model that actually answered, not the chain that was offered.
+   *
+   * Under a fallback chain `model.name` is every candidate joined together
+   * ("gemini-3.6-flash | gemini-3.5-flash-lite | ..."), so recording it
+   * answered the question "what might have reasoned about this?" when the
+   * audit trail is supposed to answer "what did?". With quota failover in
+   * play those are routinely different models, and a trail that cannot name
+   * the one that decided is not a trail.
+   */
+  const answeringModel = response.model ?? model.name;
+
   // Fail closed: a refusal, a truncated response, or anything outside the
   // schema becomes a human escalation rather than an executed action. The
   // schema makes an out-of-bounds action unreachable in the happy path; this
@@ -173,7 +185,7 @@ export async function decide(
         cache_key: cacheKey,
         chosen_action: decision.action,
         rationale: decision.rationale,
-        model: model.name,
+        model: answeringModel,
       })
       .catch((err) => console.error("[decision-cache] write failed:", err?.message ?? err));
   }
@@ -182,7 +194,7 @@ export async function decide(
     await audit(input.revenueEventId, "stopping_rule_triggered", {
       reason: "agent_returned_unusable_decision",
       stop_reason: response.stopReason,
-      model: model.name,
+      model: answeringModel,
     });
   }
 
@@ -190,7 +202,7 @@ export async function decide(
     decision_id: saved.id,
     action: decision.action,
     rationale: decision.rationale,
-    model: model.name,
+    model: answeringModel,
     from_cache: false,
     cache_key: cacheKey,
   });

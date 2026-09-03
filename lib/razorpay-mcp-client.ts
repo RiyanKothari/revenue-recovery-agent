@@ -15,6 +15,21 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 let clientPromise: Promise<Client> | null = null;
 
+/**
+ * Connections are memoised; FAILED connections are not.
+ *
+ * The first version cached the promise itself, so a single failed connect —
+ * a cold start, a dev-server reload, one flaky socket — stored a *rejected*
+ * promise that every later call then awaited. One transient error at process
+ * start therefore failed every action for the life of the process, and it
+ * did so silently: each event recorded "delivery failed" against the
+ * customer, so a connection problem read as hundreds of customers not
+ * receiving messages. A 400-event batch recorded 295 failed sends this way
+ * while the endpoint, the token and the tools were all working.
+ *
+ * Clearing the slot on failure means the next call reconnects instead of
+ * replaying the first failure forever.
+ */
 async function getClient(): Promise<Client> {
   if (clientPromise) return clientPromise;
 
@@ -25,7 +40,7 @@ async function getClient(): Promise<Client> {
     );
   }
 
-  clientPromise = (async () => {
+  const attempt = (async () => {
     const transport = new StreamableHTTPClientTransport(
       new URL("https://mcp.razorpay.com/mcp"),
       {
@@ -44,7 +59,49 @@ async function getClient(): Promise<Client> {
     return client;
   })();
 
-  return clientPromise;
+  clientPromise = attempt;
+
+  attempt.catch(() => {
+    // Only clear if this attempt is still the current one, so a reconnect
+    // that has already started is not discarded by an older failure.
+    if (clientPromise === attempt) clientPromise = null;
+  });
+
+  return attempt;
+}
+
+/**
+ * Drops the memoised connection so the next call builds a fresh one.
+ *
+ * A session that dies mid-batch fails identically to a rejected connect —
+ * every subsequent tool call errors on a transport that is never going to
+ * recover — so a broken session has to be discarded rather than reused.
+ */
+function resetClient() {
+  clientPromise = null;
+}
+
+/**
+ * Runs a tool call, and retries once on a transport failure with a fresh
+ * connection. Distinguishes "the link could not be created" from "our
+ * connection dropped": the first is a real delivery failure worth recording
+ * against the event, the second is our problem and worth one more try.
+ */
+async function withReconnect<T>(run: (client: Client) => Promise<T>): Promise<T> {
+  try {
+    return await run(await getClient());
+  } catch (err: any) {
+    const message = String(err?.message ?? err);
+    const transportFailure =
+      /Error POSTing|Streamable HTTP|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|session/i.test(
+        message
+      );
+
+    if (!transportFailure) throw err;
+
+    resetClient();
+    return run(await getClient());
+  }
 }
 
 /**
@@ -60,18 +117,18 @@ export async function createAndSendRetryLink(params: {
   channel: "sms" | "email";
   description: string;
 }): Promise<{ paymentLinkId: string; shortUrl: string; status: string }> {
-  const client = await getClient();
-
-  const createResult = await client.callTool({
-    name: "create_payment_link",
-    arguments: {
-      amount: params.amountPaise,
-      currency: params.currency,
-      description: params.description,
-      customer: { contact: params.customerContact },
-      notify: { sms: params.channel === "sms", email: params.channel === "email" },
-    },
-  });
+  const createResult = await withReconnect((client) =>
+    client.callTool({
+      name: "create_payment_link",
+      arguments: {
+        amount: params.amountPaise,
+        currency: params.currency,
+        description: params.description,
+        customer: { contact: params.customerContact },
+        notify: { sms: params.channel === "sms", email: params.channel === "email" },
+      },
+    })
+  );
 
   const parsed = parseToolResult(createResult);
   return { paymentLinkId: parsed.id, shortUrl: parsed.short_url, status: parsed.status };
@@ -84,18 +141,15 @@ export async function createAndSendRetryLink(params: {
  * discovers otherwise mid-demo.
  */
 export async function listMcpTools(): Promise<string[]> {
-  const client = await getClient();
-  const result = await client.listTools();
+  const result = await withReconnect((client) => client.listTools());
   return result.tools.map((t) => t.name);
 }
 
 /** Fetches current payment status — used by the outcome tracker. */
 export async function fetchPaymentStatus(paymentId: string): Promise<string> {
-  const client = await getClient();
-  const result = await client.callTool({
-    name: "fetch_payment",
-    arguments: { payment_id: paymentId },
-  });
+  const result = await withReconnect((client) =>
+    client.callTool({ name: "fetch_payment", arguments: { payment_id: paymentId } })
+  );
   return parseToolResult(result).status;
 }
 

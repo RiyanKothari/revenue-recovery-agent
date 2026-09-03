@@ -1,6 +1,7 @@
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { executeAction, type ExecutorDeps } from "../lib/action-executor";
+import { resetLinkBudget } from "../lib/link-budget";
 import type { Decision } from "../lib/decision-engine";
 
 /**
@@ -17,6 +18,8 @@ interface Recorded {
   whatsappSends: { toPhoneE164: string; paymentLinkUrl: string }[];
 }
 
+beforeEach(() => resetLinkBudget());
+
 function harness(overrides: {
   insertError?: { message: string };
   createLink?: ExecutorDeps["createLink"];
@@ -31,6 +34,11 @@ function harness(overrides: {
 
   const deps: Partial<ExecutorDeps> = {
     db: {
+      // No live links recorded, so the test-mode link budget is untouched
+      // and every action in these tests takes the real MCP path.
+      async countLiveLinks() {
+        return 0;
+      },
       async insertRecoveryAction(row: Record<string, unknown>) {
         recorded.inserts.push(row);
         if (overrides.insertError) throw new Error(overrides.insertError.message);

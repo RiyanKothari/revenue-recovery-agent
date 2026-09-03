@@ -1,31 +1,39 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { MoneyRiver, type Bucket } from "./money-river";
 import {
-  Box,
-  Text,
-  Heading,
-  Badge,
-  Card,
-  CardBody,
-  Divider,
-} from "@razorpay/blade/components";
+  ACTION_LABELS,
+  Chip,
+  DELIBERATE_REASONS,
+  EXECUTED_LABELS,
+  Header,
+  ROOT_CAUSE_LABELS,
+  SectionTitle,
+  Stat,
+  duration,
+  humanise,
+  label,
+  reasonLabel,
+  rupees,
+  type FeedStatus,
+} from "./ui";
 
 /**
- * Built on Razorpay's own Blade design system (@razorpay/blade) rather than
- * a custom theme — see docs/DESIGN-DECISIONS.md for why.
+ * The Desk — the live operations view.
  *
- * Ledger-first, per FRONTEND-DESIGN.md: the live reasoning feed is the
- * visual anchor and the summary strip is deliberately compact above it. The
- * feed is the thing that proves this is an agent reasoning about real money,
- * which is the moment the demo is judged on — the stats are supporting
- * evidence, not the headline.
+ * Ledger-first: the reasoning feed is the anchor and everything else is
+ * supporting evidence. The feed is what proves this is an agent reasoning
+ * about real money, which is the thing the demo is judged on; the summary
+ * numbers are the context that makes it legible.
  *
- * Every number on this page comes from /api/batch-summary and
- * /api/audit-feed. Nothing is computed or invented client-side.
+ * Every figure comes from /api/batch-summary, /api/audit-feed,
+ * /api/conformance and /api/cache-stats. Nothing is computed client-side
+ * beyond formatting, and nothing is invented.
  */
 
-interface BatchSummary {
+interface Summary {
   total_events: number;
   total_at_risk_paise: number;
   recovered_paise: number;
@@ -36,6 +44,7 @@ interface BatchSummary {
   avg_time_to_recovery_minutes: number | null;
   timed_recoveries: number;
   synthetic_events: number;
+  outcome_buckets: Bucket[];
   exceptions: { revenue_event_id: string; reason: string }[];
   experiment: {
     policy_version: string;
@@ -54,141 +63,13 @@ interface BatchSummary {
   };
 }
 
-interface AuditRow {
+interface FeedRow {
   id: string;
+  revenue_event_id: string;
   stage: string;
-  detail: Record<string, unknown>;
+  detail: Record<string, any>;
   created_at: string;
-  event: { amount_paise: number; root_cause: string; customer_id: string } | null;
-}
-
-/**
- * The UI speaks in outcomes, not internal identifiers — the raw enum belongs
- * in the audit log, not on screen. Unrecognised values fall back to a
- * humanised form of the identifier rather than a placeholder, so a new action
- * or stopping reason added later still reads correctly here without a code
- * change.
- */
-function humanise(value: string): string {
-  const cleaned = value.replace(/^guardrail_check_failed:/, "").replace(/[_:]+/g, " ");
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-}
-
-const ACTION_LABELS: Record<string, string> = {
-  send_retry_link_whatsapp: "Sent WhatsApp retry",
-  send_retry_link_email: "Sent email retry",
-  escalate_human: "Escalated to human",
-};
-
-// Executed rows name what happened, not the channel in the abstract.
-const EXECUTED_LABELS: Record<string, string> = {
-  whatsapp: "Sent via WhatsApp",
-  email: "Sent via email",
-  human_escalation: "Queued for human review",
-};
-
-const REASON_LABELS: Record<string, string> = {
-  customer_dnd_opt_out: "Customer opted out (DND)",
-  max_retry_attempts_reached: "Reached retry limit",
-  cooldown_window_active: "Reached cooldown window",
-  refund_or_dispute_flagged: "Refunded or disputed",
-  not_recoverable_or_unknown_cause: "Unrecognised failure — needs review",
-  agent_returned_unusable_decision: "Agent response unusable — escalated",
-  negative_expected_value: "Not worth chasing (cost exceeds expected recovery)",
-  no_customer_identifier: "No customer id — consent unverifiable",
-  holdout_control: "Holdout control — deliberately untreated",
-  experiment_assignment_failed: "Could not record experiment arm",
-};
-
-const ROOT_CAUSE_LABELS: Record<string, string> = {
-  insufficient_funds: "Insufficient funds",
-  bank_timeout: "Bank timeout",
-  card_declined: "Card declined",
-  gateway_error: "Gateway error",
-  network_drop: "Network drop",
-  invalid_credentials: "Invalid credentials",
-  unknown: "Unknown",
-  unclassified: "Unclassified",
-};
-
-/**
- * Not every stopped event is a failure. A holdout control was withheld on
- * purpose to measure the baseline, and a negative-expected-value skip is the
- * agent correctly declining to spend ₹50 chasing ₹40. Listing either under
- * "could not resolve" would misrepresent a deliberate decision as a
- * shortcoming — and understate the judgment the agent is exercising.
- */
-const DELIBERATE_REASONS = new Set(["holdout_control", "negative_expected_value"]);
-
-function label(map: Record<string, string>, key: string | undefined): string {
-  if (!key) return "—";
-  return map[key] ?? humanise(key);
-}
-
-/**
- * Stopping reasons need their own resolver: the guardrail failure reasons are
- * namespaced (`guardrail_check_failed:consent`), and humanising one naively
- * yields a bare "Consent" badge, which reads as a category rather than as the
- * refusal it actually was.
- */
-function reasonLabel(reason: string | undefined): string {
-  if (!reason) return "—";
-  if (reason.startsWith("guardrail_check_failed")) {
-    return "Safety check unavailable — held back";
-  }
-  return label(REASON_LABELS, reason);
-}
-
-function rupees(paise: number): string {
-  return `₹${Math.round(paise / 100).toLocaleString("en-IN")}`;
-}
-
-function prefersReducedMotion(): boolean {
-  if (typeof window === "undefined" || !window.matchMedia) return false;
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-/**
- * The one place motion is used for delight rather than function: the summary
- * strip tweens to its real values on arrival instead of snapping. Reduced
- * motion still gets the number, immediately.
- */
-function useCountUp(target: number | null, durationMs = 600): number {
-  const [display, setDisplay] = useState(0);
-  const fromRef = useRef(0);
-
-  useEffect(() => {
-    if (target == null) return;
-
-    if (prefersReducedMotion()) {
-      fromRef.current = target;
-      setDisplay(target);
-      return;
-    }
-
-    const from = fromRef.current;
-    const delta = target - from;
-    if (delta === 0) return;
-
-    let frame = 0;
-    const started = performance.now();
-
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - started) / durationMs);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setDisplay(from + delta * eased);
-      if (t < 1) {
-        frame = requestAnimationFrame(tick);
-      } else {
-        fromRef.current = target;
-      }
-    };
-
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [target, durationMs]);
-
-  return display;
+  event: { amount_paise: number; root_cause: string | null; customer_id: string | null } | null;
 }
 
 interface Conformance {
@@ -196,48 +77,47 @@ interface Conformance {
     passed: boolean;
     totalChecked: number;
     totalViolations: number;
-    results: {
-      id: string;
-      description: string;
-      severity: string;
-      checked: number;
-      violations: { detail: string }[];
-    }[];
+    results: { id: string; description: string; checked: number; violations: { detail: string }[] }[];
   };
   complianceCost: {
-    basis: string;
-    byCategory: Record<
-      string,
-      { count: number; atRiskPaise: number; foregonePaise: number }
-    >;
+    byCategory: Record<string, { count: number; atRiskPaise: number; foregonePaise: number }>;
     totalForegonePaise: number;
-    note: string;
   };
 }
 
-type FeedStatus = "connecting" | "live" | "offline";
+interface CacheStats {
+  distinctSituations: number;
+  modelCalls: number;
+  reusedDecisions: number;
+  totalDecisions: number;
+  reuseRate: number;
+  situations: { key: string; description: string; served: number }[];
+}
 
 export default function DashboardPage() {
-  const [summary, setSummary] = useState<BatchSummary | null>(null);
-  const [feed, setFeed] = useState<AuditRow[]>([]);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [feed, setFeed] = useState<FeedRow[]>([]);
   const [status, setStatus] = useState<FeedStatus>("connecting");
   const [conformance, setConformance] = useState<Conformance | null>(null);
+  const [cache, setCache] = useState<CacheStats | null>(null);
+  const [paused, setPaused] = useState(false);
 
   useEffect(() => {
-    // A failed poll must not kill the loop — keep the last good numbers on
-    // screen, mark the feed stale, and try again on the next tick.
+    // A failed poll must not clear the screen. Keep the last good numbers,
+    // mark the feed stale, and try again — an outage should look like
+    // staleness, not like an agent that has done nothing.
     const load = async () => {
       try {
-        const [summaryRes, feedRes] = await Promise.all([
+        const [s, f] = await Promise.all([
           fetch("/api/batch-summary"),
           fetch("/api/audit-feed"),
         ]);
-        if (!summaryRes.ok || !feedRes.ok) {
+        if (!s.ok || !f.ok) {
           setStatus("offline");
           return;
         }
-        setSummary(await summaryRes.json());
-        setFeed((await feedRes.json()).feed ?? []);
+        setSummary(await s.json());
+        setFeed((await f.json()).feed ?? []);
         setStatus("live");
       } catch {
         setStatus("offline");
@@ -245,89 +125,97 @@ export default function DashboardPage() {
     };
 
     load();
-    const interval = setInterval(load, 4000); // near-real-time; a socket is overkill for this
+    if (paused) return;
+    const interval = setInterval(load, 4000);
     return () => clearInterval(interval);
-  }, []);
+  }, [paused]);
 
   useEffect(() => {
     // Conformance re-derives every invariant across the whole batch, so it is
     // far heavier than the feed poll and runs on its own slower cadence.
     const verify = async () => {
       try {
-        const res = await fetch("/api/conformance");
-        if (!res.ok) return;
-        setConformance(await res.json());
+        const [c, k] = await Promise.all([fetch("/api/conformance"), fetch("/api/cache-stats")]);
+        if (c.ok) setConformance(await c.json());
+        if (k.ok) setCache(await k.json());
       } catch {
-        return;
+        /* keep the last good result */
       }
     };
-
     verify();
     const interval = setInterval(verify, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  const reasoningRows = feed
-    .filter((row) => row.stage === "agent_decided" || row.stage === "action_executed")
-    .slice(0, 25);
+  const rows = feed
+    .filter((r) => r.stage === "agent_decided" || r.stage === "action_executed")
+    .slice(0, 40);
 
-  const allStops = summary?.exceptions ?? [];
-  const unresolved = allStops.filter((e) => !DELIBERATE_REASONS.has(e.reason));
-  const declined = allStops.filter((e) => DELIBERATE_REASONS.has(e.reason));
+  const stops = summary?.exceptions ?? [];
+  const unresolved = stops.filter((e) => !DELIBERATE_REASONS.has(e.reason));
+  const declined = stops.filter((e) => DELIBERATE_REASONS.has(e.reason));
 
   return (
-    <Box
-      padding="spacing.7"
-      minHeight="100vh"
-      backgroundColor="surface.background.gray.subtle"
-    >
-      {/* --- Header --- */}
-      <Box
-        display="flex"
-        justifyContent="space-between"
-        alignItems="flex-start"
-        gap="spacing.4"
-        marginBottom="spacing.6"
-      >
-        <Box>
-          <Heading size="large">Revenue Recovery — Live</Heading>
-          <Text color="surface.text.gray.muted">
-            Extending Razorpay Sprint 2026&apos;s failed-payment recovery pattern with
-            root-cause reasoning, bounded actions, and a full audit trail.
-          </Text>
-        </Box>
-        <StatusPill status={status} />
-      </Box>
+    <div className="rr-page">
+      <Header status={status} />
 
-      {/* --- Summary strip: compact, top-anchored, smaller than the feed --- */}
-      <Box marginBottom="spacing.7">
+      <div className="rr-shell">
+        <MoneyRiver
+          buckets={summary?.outcome_buckets ?? []}
+          totalAtRiskPaise={summary?.total_at_risk_paise ?? 0}
+        />
+
+        {/* The provenance of every number below. Deliberately not tucked
+            away: this project's thesis is separating measured from
+            estimated, and a dashboard that hides its own provenance
+            forfeits that argument at the first hard question. */}
+        {summary && summary.synthetic_events > 0 && (
+          <div className="rr-notice">
+            <span aria-hidden="true">⚠</span>
+            <span>
+              <strong>Synthetic batch</strong> — {summary.synthetic_events} of{" "}
+              {summary.total_events} events are seeded. Recoveries are simulated from a
+              stated assumption, so the lift below demonstrates the measurement working;
+              it is not evidence about real customers.
+            </span>
+          </div>
+        )}
+
         <div className="rr-stats">
-          <SummaryStat
-            label="Total at risk"
+          <Stat
+            label="Total risk base"
             value={summary ? summary.total_at_risk_paise : null}
             format={rupees}
+            rail="var(--rr-blue)"
+            sub={summary ? `${summary.total_events} failed payments` : undefined}
           />
-          <SummaryStat
+          <Stat
             label="Recovered"
             value={summary ? summary.recovered_paise : null}
             format={rupees}
-            tone="positive"
+            rail="var(--rr-green)"
+            sub={
+              summary
+                ? `${summary.experiment.treated.converted + summary.experiment.control.converted} payments came back`
+                : undefined
+            }
           />
-          <SummaryStat
+          <Stat
             label="Recovery rate"
             value={summary ? summary.recovery_rate * 100 : null}
             format={(n) => `${n.toFixed(1)}%`}
-            tone="positive"
+            rail="var(--rr-amber)"
             sub={
               summary
                 ? `${(summary.recovery_rate_attempted * 100).toFixed(1)}% of ${summary.attempted_events} attempted`
                 : undefined
             }
           />
-          <SummaryStat
-            label="Avg. time to recovery"
+          <Stat
+            label="Avg resolution time"
             value={summary?.avg_time_to_recovery_minutes ?? null}
-            format={(n) => `${Math.round(n)} min`}
+            format={duration}
+            rail="var(--rr-neutral)"
             sub={
               summary && summary.timed_recoveries > 0
                 ? `across ${summary.timed_recoveries} recoveries`
@@ -335,250 +223,353 @@ export default function DashboardPage() {
             }
           />
         </div>
-      </Box>
 
-      {/* --- Measured lift. Everything above is attribution; this is the
-          only number on the page that establishes causation. --- */}
-      {summary && summary.synthetic_events > 0 && (
-        <SyntheticNotice
-          syntheticEvents={summary.synthetic_events}
-          totalEvents={summary.total_events}
-        />
-      )}
+        <div className="rr-columns">
+          <div>
+            <div className="rr-card" style={{ padding: 16 }}>
+              <SectionTitle
+                right={
+                  <button
+                    className="rr-chip rr-chip--neutral"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setPaused((p) => !p)}
+                  >
+                    {paused ? "Resume" : "Pause"}
+                  </button>
+                }
+              >
+                Live reasoning
+              </SectionTitle>
 
-      {summary && <LiftPanel experiment={summary.experiment} />}
-
-      {/* --- Machine-checked safety proof. The guardrails enforce; this
-          re-derives the same properties from what was recorded. --- */}
-      {conformance && <ConformancePanel data={conformance} />}
-
-      <div className="rr-columns">
-        {/* --- Live reasoning feed (the anchor) --- */}
-        <Box>
-          <span className="rr-mono">
-            <Heading size="small" marginBottom="spacing.3">
-              LIVE REASONING
-            </Heading>
-          </span>
-
-          {reasoningRows.length === 0 ? (
-            <Card>
-              <CardBody>
-                <Text color="surface.text.gray.muted">
+              {rows.length === 0 ? (
+                <div style={{ color: "var(--rr-text-3)", fontSize: 13, padding: "16px 4px" }}>
                   No revenue-at-risk events yet — send a test payment failure to see the
                   agent respond.
-                </Text>
-              </CardBody>
-            </Card>
-          ) : (
-            <div className="rr-scroll">
-              <Box display="flex" flexDirection="column" gap="spacing.3">
-                {reasoningRows.map((row) => (
-                  <FeedEntry key={row.id} row={row} />
-                ))}
-              </Box>
+                </div>
+              ) : (
+                <div className="rr-feed">
+                  {rows.map((row) => (
+                    <FeedRowCard key={row.id} row={row} />
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </Box>
+          </div>
 
-        {/* --- Root cause breakdown + exceptions --- */}
-        <Box>
-          <span className="rr-mono">
-            <Heading size="small" marginBottom="spacing.3">
-              BY ROOT CAUSE
-            </Heading>
-          </span>
-          <Box display="flex" flexDirection="column" gap="spacing.3" marginBottom="spacing.6">
-            {summary && Object.keys(summary.by_root_cause).length > 0 ? (
-              Object.entries(summary.by_root_cause)
-                .sort((a, b) => b[1].amount_paise - a[1].amount_paise)
-                .map(([cause, stats]) => (
-                  <Box key={cause} display="flex" justifyContent="space-between" gap="spacing.3">
-                    <Text>{label(ROOT_CAUSE_LABELS, cause)}</Text>
-                    <span className="rr-mono">
-                      <Text color="surface.text.gray.muted">
-                        {`${stats.count} · ${rupees(stats.amount_paise)}`}
-                      </Text>
-                    </span>
-                  </Box>
-                ))
-            ) : (
-              <Text color="surface.text.gray.muted">Nothing classified yet.</Text>
-            )}
-          </Box>
-
-          <Divider marginBottom="spacing.5" />
-
-          {/* An honest exceptions list is more credible than a suspiciously
-              perfect dashboard — this is deliberately not tucked away. */}
-          <span className="rr-mono">
-            <Heading size="small" marginBottom="spacing.3">
-              EXCEPTIONS — COULD NOT RESOLVE
-            </Heading>
-          </span>
-          <Box display="flex" flexDirection="column" gap="spacing.3">
-            {unresolved.length ? (
-              unresolved.slice(0, 20).map((exc, i) => (
-                <Box
-                  key={`${exc.revenue_event_id}-${i}`}
-                  display="flex"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  gap="spacing.3"
-                >
-                  <span className="rr-mono">
-                    <Text size="small" color="surface.text.gray.muted">
-                      {exc.revenue_event_id.slice(0, 8)}
-                    </Text>
-                  </span>
-                  <Badge color="negative">{reasonLabel(exc.reason)}</Badge>
-                </Box>
-              ))
-            ) : (
-              <Text color="surface.text.gray.muted">No unresolved exceptions yet.</Text>
-            )}
-          </Box>
-
-          {/* Deliberate non-actions, kept separate from failures — declining
-              to act is judgment, not a shortcoming. */}
-          {declined.length > 0 && (
-            <>
-              <Divider marginTop="spacing.5" marginBottom="spacing.5" />
-              <span className="rr-mono">
-                <Heading size="small" marginBottom="spacing.3">
-                  DECLINED ON PURPOSE
-                </Heading>
-              </span>
-              <Box display="flex" flexDirection="column" gap="spacing.3">
-                {declined.slice(0, 20).map((exc, i) => (
-                  <Box
-                    key={`${exc.revenue_event_id}-${i}`}
-                    display="flex"
-                    justifyContent="space-between"
-                    alignItems="center"
-                    gap="spacing.3"
-                  >
-                    <span className="rr-mono">
-                      <Text size="small" color="surface.text.gray.muted">
-                        {exc.revenue_event_id.slice(0, 8)}
-                      </Text>
-                    </span>
-                    <Badge color="information">{reasonLabel(exc.reason)}</Badge>
-                  </Box>
-                ))}
-              </Box>
-            </>
-          )}
-        </Box>
+          <div className="rr-rail">
+            {summary && <LiftCard experiment={summary.experiment} />}
+            {conformance && <ConformanceCard data={conformance} />}
+            {conformance && <RulesCostCard data={conformance} />}
+            {cache && <CacheCard stats={cache} />}
+            {summary && <RootCauseCard byCause={summary.by_root_cause} />}
+            <ExceptionsCard unresolved={unresolved} declined={declined} />
+          </div>
+        </div>
       </div>
-    </Box>
+    </div>
   );
 }
 
 /**
- * The holdout result. A slice of eligible events was deliberately left
- * untreated, so this compares "agent acted" against "agent did nothing" on
- * comparable populations — the difference is recovery the agent caused,
- * rather than recovery that merely followed a message being sent.
+ * One ledger entry. The whole row is a link to the trace, because the
+ * natural question on reading a rationale is "show me how it got there".
  */
-function LiftPanel({
-  experiment,
-}: {
-  experiment: BatchSummary["experiment"];
-}) {
+function FeedRowCard({ row }: { row: FeedRow }) {
+  const executed = row.stage === "action_executed";
+  const failed = executed && row.detail?.delivery_success === false;
+
+  const actionText = executed
+    ? label(EXECUTED_LABELS, row.detail?.channel)
+    : label(ACTION_LABELS, row.detail?.action);
+
+  // Reused reasoning is labelled rather than passed off as fresh. The
+  // rationale is identical because the situation is identical, but the feed
+  // must never imply the agent thought about this event from scratch.
+  const fromCache = row.detail?.from_cache === true;
+
+  // Razorpay test mode allows 30 payment links in total, so a large demo
+  // batch exhausts them. Past that the pipeline still runs and the link is
+  // marked simulated — shown here rather than left to look like a real one.
+  const simulatedLink = row.detail?.link_source === "simulated";
+
+  const rail = failed
+    ? "var(--rr-red)"
+    : executed
+      ? "var(--rr-green)"
+      : fromCache
+        ? "var(--rr-neutral)"
+        : "var(--rr-blue)";
+
+  return (
+    <Link
+      href={`/dashboard/event/${row.revenue_event_id}`}
+      className="rr-row"
+      style={{ ["--rail" as string]: rail }}
+    >
+      <div className="rr-row__top">
+        <span className="rr-row__id rr-mono">
+          {row.revenue_event_id.slice(0, 8).toUpperCase()}
+        </span>
+        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {fromCache && <Chip tone="neutral">reused</Chip>}
+          {simulatedLink && <Chip tone="amber">simulated link</Chip>}
+          <Chip tone={failed ? "red" : executed ? "green" : "blue"}>
+            {failed ? `${actionText} — failed` : actionText}
+          </Chip>
+        </span>
+      </div>
+
+      <div className="rr-row__amount rr-mono">
+        {row.event ? rupees(row.event.amount_paise) : "—"}
+        {row.event?.root_cause && (
+          <span style={{ fontSize: 11, color: "var(--rr-text-3)", marginLeft: 8 }}>
+            {label(ROOT_CAUSE_LABELS, row.event.root_cause)}
+          </span>
+        )}
+      </div>
+
+      <div className="rr-row__why">
+        {row.detail?.rationale ??
+          row.detail?.note ??
+          (row.detail?.error ? humanise(String(row.detail.error)) : "—")}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginTop: 8,
+          fontSize: 10,
+          color: "var(--rr-text-3)",
+        }}
+        className="rr-mono"
+      >
+        <span>{row.detail?.payment_link_id ?? ""}</span>
+        <span>{new Date(row.created_at).toLocaleTimeString("en-IN", { hour12: false })}</span>
+      </div>
+    </Link>
+  );
+}
+
+/**
+ * The holdout result — the only number on this page that establishes
+ * causation rather than attribution.
+ */
+function LiftCard({ experiment }: { experiment: Summary["experiment"] }) {
   const { treated, control, lift } = experiment;
   const hasArms = treated.n > 0 && control.n > 0;
 
   return (
-    <Card marginBottom="spacing.7">
-      <CardBody>
-        <Box
-          display="flex"
-          justifyContent="space-between"
-          alignItems="center"
-          gap="spacing.3"
-          marginBottom="spacing.4"
-        >
-          <span className="rr-mono">
-            <Heading size="small">MEASURED LIFT vs HOLDOUT</Heading>
-          </span>
-          <Badge color={lift.significant ? "positive" : "neutral"}>
-            {lift.significant ? "Significant" : "Not yet conclusive"}
-          </Badge>
-        </Box>
+    <div className="rr-card">
+      <SectionTitle
+        right={
+          lift.incrementalPaise != null && hasArms ? (
+            <Chip tone={lift.significant ? "green" : "neutral"}>
+              {`Inc. ${rupees(lift.incrementalPaise)}`}
+            </Chip>
+          ) : undefined
+        }
+      >
+        Measured lift vs holdout
+      </SectionTitle>
 
-        {!hasArms ? (
-          <Text color="surface.text.gray.muted">
-            {`No holdout data yet — ${experiment.holdout_percent}% of eligible events are withheld to measure the do-nothing baseline.`}
-          </Text>
-        ) : (
-          <>
-            <Box display="flex" flexWrap="wrap" gap="spacing.7" marginBottom="spacing.4">
-              <ArmStat
-                label="Treated (agent acted)"
-                rate={lift.treatedRate}
-                arm={treated}
-              />
-              <ArmStat
-                label="Control (left alone)"
-                rate={lift.controlRate}
-                arm={control}
-              />
-              <Box>
-                <Text size="small" color="surface.text.gray.muted">
-                  Incremental recovery
-                </Text>
-                <Heading size="medium" color="feedback.text.positive.intense">
-                  {lift.incrementalPaise == null
-                    ? "—"
-                    : rupees(lift.incrementalPaise)}
-                </Heading>
-                <Text size="xsmall" color="surface.text.gray.muted">
-                  {`${lift.absoluteLiftPp >= 0 ? "+" : ""}${lift.absoluteLiftPp.toFixed(1)}pp${
-                    lift.ci95Pp
-                      ? ` (95% CI ${lift.ci95Pp[0].toFixed(1)} to ${lift.ci95Pp[1].toFixed(1)})`
-                      : ""
-                  }`}
-                </Text>
-              </Box>
-            </Box>
+      {!hasArms ? (
+        <div style={{ fontSize: 12.5, color: "var(--rr-text-2)" }}>
+          {`No holdout data yet — ${experiment.holdout_percent}% of eligible events are withheld to measure the do-nothing baseline.`}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div>
+              <div className="rr-bar">
+                <div
+                  className="rr-bar__fill rr-bar__fill--treated"
+                  style={{ width: `${Math.min(100, lift.treatedRate * 100)}%` }}
+                />
+                <span className="rr-bar__label">
+                  Treated · {(lift.treatedRate * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div
+                className="rr-mono"
+                style={{ fontSize: 10, color: "var(--rr-text-3)", marginTop: 3 }}
+              >
+                {treated.converted} / {treated.n} recovered
+              </div>
+            </div>
 
-            <Text size="small" color="surface.text.gray.muted">
-              {lift.caveat ??
-                "Recovery the agent caused, over what these events would have returned untouched."}
-            </Text>
-          </>
-        )}
-      </CardBody>
-    </Card>
+            <div>
+              <div className="rr-bar">
+                <div
+                  className="rr-bar__fill rr-bar__fill--control"
+                  style={{ width: `${Math.min(100, lift.controlRate * 100)}%` }}
+                />
+                <span className="rr-bar__label">
+                  Holdout · {(lift.controlRate * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div
+                className="rr-mono"
+                style={{ fontSize: 10, color: "var(--rr-text-3)", marginTop: 3 }}
+              >
+                {control.converted} / {control.n} recovered
+              </div>
+            </div>
+          </div>
+
+          {/* The interval is drawn to scale, not printed as a footnote. Its
+              width is the honest part of this panel — a lift with a wide
+              interval is a weaker claim, and the reader should see that
+              before they read the point estimate. */}
+          {lift.ci95Pp && <ConfidenceInterval ci={lift.ci95Pp} point={lift.absoluteLiftPp} />}
+
+          <div style={{ fontSize: 11.5, color: "var(--rr-text-2)", marginTop: 10 }}>
+            {lift.caveat ??
+              "Recovery the agent caused, over what these events would have returned untouched."}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
-function ArmStat({
-  label,
-  rate,
-  arm,
-}: {
-  label: string;
-  rate: number;
-  arm: { n: number; converted: number };
-}) {
+/**
+ * The interval, drawn against zero.
+ *
+ * The zero line is the point of the widget. "Significant" means the whole
+ * interval sits above it, and showing that is a far stronger claim than
+ * printing a p-value or a badge — a reader can check it themselves in one
+ * glance. An interval that straddles zero should look like it straddles
+ * zero, which is exactly the case a coloured "significant" chip alone would
+ * let you skim past.
+ *
+ * Labels are positioned under the marks they name rather than spread across
+ * the axis, because an interval sitting in the right-hand third with its
+ * bounds printed at the far edges reads as a wider interval than it is.
+ */
+function ConfidenceInterval({ ci, point }: { ci: [number, number]; point: number }) {
+  // Symmetric around zero so the distance from zero is honest in both
+  // directions, with headroom so the marks never touch the edge.
+  const bound = Math.max(5, Math.abs(ci[0]), Math.abs(ci[1]), Math.abs(point)) * 1.25;
+  const pos = (v: number) => ((v + bound) / (2 * bound)) * 100;
+
+  const clear = ci[0] > 0 || ci[1] < 0;
+
   return (
-    <Box>
-      <Text size="small" color="surface.text.gray.muted">
-        {label}
-      </Text>
-      <Heading size="medium">{`${(rate * 100).toFixed(1)}%`}</Heading>
-      <span className="rr-mono">
-        <Text size="xsmall" color="surface.text.gray.muted">
-          {`${arm.converted} / ${arm.n}`}
-        </Text>
-      </span>
-    </Box>
+    <div style={{ marginTop: 14 }}>
+      <div className="rr-ci" style={{ height: 26 }}>
+        <div className="rr-ci__track" />
+
+        {/* Zero. Everything about this widget is a comparison to it. */}
+        <div
+          style={{
+            position: "absolute",
+            left: `${pos(0)}%`,
+            top: 2,
+            bottom: 8,
+            width: 1,
+            background: "var(--rr-border-strong)",
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            left: `${pos(0)}%`,
+            top: 0,
+            fontSize: 9,
+            color: "var(--rr-text-3)",
+            transform: "translateX(-50%)",
+          }}
+        >
+          0
+        </div>
+
+        <div
+          className="rr-ci__span"
+          style={{ left: `${pos(ci[0])}%`, width: `${pos(ci[1]) - pos(ci[0])}%` }}
+        />
+        <div className="rr-ci__point" style={{ left: `${pos(point)}%` }} />
+
+        <span
+          className="rr-mono"
+          style={{
+            position: "absolute",
+            left: `${pos(point)}%`,
+            top: 15,
+            transform: "translateX(-50%)",
+            fontSize: 10,
+            color: "var(--rr-blue)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {`${point >= 0 ? "+" : ""}${point.toFixed(1)}pp`}
+        </span>
+      </div>
+
+      <div
+        className="rr-mono"
+        style={{ fontSize: 9.5, color: "var(--rr-text-3)", marginTop: 12 }}
+      >
+        {`95% CI ${ci[0].toFixed(1)} to ${ci[1].toFixed(1)}pp`}
+        {clear
+          ? " — the whole interval is clear of zero"
+          : " — the interval crosses zero, so the effect is not yet established"}
+      </div>
+    </div>
   );
 }
 
-const COST_CATEGORY_LABELS: Record<string, string> = {
+function ConformanceCard({ data }: { data: Conformance }) {
+  const { conformance } = data;
+
+  return (
+    <div className="rr-card">
+      <SectionTitle
+        right={
+          <Chip tone={conformance.passed ? "green" : "red"}>
+            {conformance.passed
+              ? `${conformance.totalChecked.toLocaleString("en-IN")} checks`
+              : `${conformance.totalViolations} violation(s)`}
+          </Chip>
+        }
+      >
+        Safety conformance
+      </SectionTitle>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+        {conformance.results.map((r) => {
+          const ok = r.violations.length === 0;
+          return (
+            <div
+              key={r.id}
+              style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}
+            >
+              <span
+                className="rr-mono"
+                style={{ color: "var(--rr-text-3)", width: 20, flexShrink: 0 }}
+              >
+                {r.id}
+              </span>
+              <span style={{ color: "var(--rr-text-2)", flex: 1 }}>{r.description}</span>
+              <Chip tone={ok ? "green" : "red"}>
+                {ok ? `${r.checked} ok` : `${r.violations.length} failed`}
+              </Chip>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* The panel's entire argument. Without this line a reader sees seven
+          green boxes and reads decoration. */}
+      <div style={{ fontSize: 11, color: "var(--rr-text-3)", marginTop: 12, lineHeight: 1.5 }}>
+        Re-derived from the recorded data by a verifier that shares no code with the
+        guardrails that enforce it.
+      </div>
+    </div>
+  );
+}
+
+const COST_LABELS: Record<string, string> = {
   compliance: "Compliance rules",
   measurement: "Holdout (price of knowing)",
   economics: "Not worth chasing",
@@ -586,270 +577,172 @@ const COST_CATEGORY_LABELS: Record<string, string> = {
   unrecoverable: "Nothing to chase",
 };
 
-/**
- * Safety, proven and priced.
- *
- * The left half is a mechanical re-derivation of each invariant from the
- * recorded data — not a restatement of what the guardrails intended, but a
- * check that they actually held. The right half is what those rules cost in
- * foregone recovery, because safety isn't free and saying so is more credible
- * than implying it is.
- */
-function ConformancePanel({ data }: { data: Conformance }) {
-  const { conformance, complianceCost } = data;
+/** Safety isn't free, and saying so is more credible than implying it is. */
+function RulesCostCard({ data }: { data: Conformance }) {
+  const lines = Object.entries(data.complianceCost.byCategory).filter(([, l]) => l.count > 0);
 
   return (
-    <Card marginBottom="spacing.7">
-      <CardBody>
-        <Box
-          display="flex"
-          justifyContent="space-between"
-          alignItems="center"
-          gap="spacing.3"
-          marginBottom="spacing.4"
-        >
-          <span className="rr-mono">
-            <Heading size="small">SAFETY CONFORMANCE</Heading>
+    <div className="rr-card">
+      <SectionTitle right={<span style={{ fontSize: 10, color: "var(--rr-text-3)" }}>estimated</span>}>
+        What the rules cost
+      </SectionTitle>
+
+      {lines.map(([category, line]) => (
+        <div key={category} className="rr-line">
+          <span className="rr-line__label">{label(COST_LABELS, category)}</span>
+          <span className="rr-line__value rr-mono">
+            {line.count} · {rupees(line.foregonePaise)}
           </span>
-          <Badge color={conformance.passed ? "positive" : "negative"}>
-            {conformance.passed
-              ? `All invariants held · ${conformance.totalChecked} checks`
-              : `${conformance.totalViolations} violation(s)`}
-          </Badge>
-        </Box>
-
-        <div className="rr-columns">
-          <Box display="flex" flexDirection="column" gap="spacing.2">
-            {conformance.results.map((result) => {
-              const ok = result.violations.length === 0;
-              return (
-                <Box
-                  key={result.id}
-                  display="flex"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  gap="spacing.3"
-                >
-                  <Box display="flex" alignItems="center" gap="spacing.3">
-                    <span className="rr-mono">
-                      <Text size="small" color="surface.text.gray.muted">
-                        {result.id}
-                      </Text>
-                    </span>
-                    <Text size="small">{result.description}</Text>
-                  </Box>
-                  <Badge color={ok ? "positive" : "negative"}>
-                    {ok ? `${result.checked} ok` : `${result.violations.length} failed`}
-                  </Badge>
-                </Box>
-              );
-            })}
-          </Box>
-
-          <Box>
-            <Text size="small" color="surface.text.gray.muted" marginBottom="spacing.3">
-              What the rules cost (estimated)
-            </Text>
-            <Box display="flex" flexDirection="column" gap="spacing.2">
-              {Object.entries(complianceCost.byCategory)
-                .filter(([, line]) => line.count > 0)
-                .map(([category, line]) => (
-                  <Box
-                    key={category}
-                    display="flex"
-                    justifyContent="space-between"
-                    gap="spacing.3"
-                  >
-                    <Text size="small">
-                      {label(COST_CATEGORY_LABELS, category)}
-                    </Text>
-                    <span className="rr-mono">
-                      <Text size="small" color="surface.text.gray.muted">
-                        {`${line.count} · ${rupees(line.foregonePaise)}`}
-                      </Text>
-                    </span>
-                  </Box>
-                ))}
-            </Box>
-
-            <Box marginTop="spacing.4">
-              <Heading size="medium">{rupees(complianceCost.totalForegonePaise)}</Heading>
-              <Text size="xsmall" color="surface.text.gray.muted">
-                Recovery foregone to keep the rules — estimated, not measured.
-              </Text>
-            </Box>
-          </Box>
         </div>
-      </CardBody>
-    </Card>
-  );
-}
+      ))}
 
-/**
- * Says out loud when the numbers below come from a synthetic batch.
- *
- * The recoveries in a seeded batch are generated from a stated assumption, so
- * the lift measures an effect the batch was told to have. The measurement
- * machinery is real and the arithmetic is real; the underlying customer
- * behaviour is not. Anyone reading this screen has to be able to tell the
- * difference at a glance — burying it in a README would make every number
- * here quietly misleading.
- */
-function SyntheticNotice({
-  syntheticEvents,
-  totalEvents,
-}: {
-  syntheticEvents: number;
-  totalEvents: number;
-}) {
-  return (
-    <Card marginBottom="spacing.5">
-      <CardBody>
-        <Box display="flex" alignItems="center" gap="spacing.4" flexWrap="wrap">
-          <Badge color="notice">Synthetic batch</Badge>
-          <Text size="small" color="surface.text.gray.muted">
-            {`${syntheticEvents} of ${totalEvents} events are seeded. Recoveries are simulated from a stated assumption, so the lift below demonstrates the measurement working — it is not evidence about real customers.`}
-          </Text>
-        </Box>
-      </CardBody>
-    </Card>
-  );
-}
-
-function StatusPill({ status }: { status: FeedStatus }) {
-  const config = {
-    live: { color: "positive" as const, text: "Live", dot: "#00A868" },
-    connecting: { color: "neutral" as const, text: "Connecting", dot: "#8B8B8B" },
-    offline: { color: "negative" as const, text: "Feed unavailable", dot: "#D93B3B" },
-  }[status];
-
-  // Badge takes text-only children, so the dot sits beside it rather than
-  // inside. Colour never carries the meaning alone — the label says it too.
-  return (
-    <Box display="flex" alignItems="center" gap="spacing.2">
-      <span
-        className="rr-live-dot"
-        style={{ backgroundColor: config.dot }}
-        aria-hidden="true"
-      />
-      <Badge color={config.color}>{config.text}</Badge>
-    </Box>
-  );
-}
-
-function FeedEntry({ row }: { row: AuditRow }) {
-  const detail = row.detail as Record<string, any>;
-  const executed = row.stage === "action_executed";
-
-  // action_executed rows carry a channel; agent_decided rows carry the action.
-  const actionText = executed
-    ? label(EXECUTED_LABELS, detail?.channel)
-    : label(ACTION_LABELS, detail?.action);
-
-  const failed = executed && detail?.delivery_success === false;
-
-  // The MCP-issued payment link is the verifiable Razorpay-side artifact of
-  // the action — worth surfacing rather than leaving in the audit log.
-  const paymentLinkId = detail?.payment_link_id as string | undefined;
-
-  // Reused reasoning is labelled rather than passed off as fresh. The
-  // rationale is identical because the situation is identical, but the feed
-  // should never imply the agent thought about this event from scratch.
-  const fromCache = detail?.from_cache === true;
-
-  return (
-    <div className="rr-feed-row">
-      <Card>
-        <CardBody>
-          <Box
-            display="flex"
-            justifyContent="space-between"
-            alignItems="center"
-            gap="spacing.3"
-            marginBottom="spacing.2"
-          >
-            <Box display="flex" alignItems="center" gap="spacing.2">
-              <Badge color={failed ? "negative" : executed ? "positive" : "information"}>
-                {failed ? `${actionText} — delivery failed` : actionText}
-              </Badge>
-              {fromCache && <Badge color="neutral">reused</Badge>}
-            </Box>
-            <span className="rr-mono">
-              <Text size="small" color="surface.text.gray.muted">
-                {new Date(row.created_at).toLocaleTimeString("en-IN", { hour12: false })}
-              </Text>
-            </span>
-          </Box>
-
-          {row.event && (
-            <Box display="flex" gap="spacing.2" marginBottom="spacing.2">
-              <Text size="small" color="surface.text.gray.muted">
-                {label(ROOT_CAUSE_LABELS, row.event.root_cause)}
-              </Text>
-              <span className="rr-mono">
-                <Text size="small" color="surface.text.gray.muted">
-                  {rupees(row.event.amount_paise)}
-                </Text>
-              </span>
-            </Box>
-          )}
-
-          {/* The rationale is the explainability artifact — it is the reason
-              this panel exists, so it gets the body treatment, not a caption. */}
-          {detail?.rationale ? (
-            <Text>{detail.rationale}</Text>
-          ) : detail?.note ? (
-            <Text color="surface.text.gray.muted">{detail.note}</Text>
-          ) : detail?.error ? (
-            <Text color="surface.text.gray.muted">
-              {humanise(String(detail.error))}
-            </Text>
-          ) : paymentLinkId ? (
-            <span className="rr-mono">
-              <Text size="small" color="surface.text.gray.muted">
-                {paymentLinkId}
-              </Text>
-            </span>
-          ) : null}
-        </CardBody>
-      </Card>
+      <div className="rr-total">
+        <div style={{ fontSize: 20, fontWeight: 500 }} className="rr-mono">
+          {rupees(data.complianceCost.totalForegonePaise)}
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--rr-text-3)", marginTop: 3 }}>
+          Recovery foregone to keep the rules — estimated, not measured.
+        </div>
+      </div>
     </div>
   );
 }
 
-function SummaryStat({
-  label: statLabel,
-  value,
-  format,
-  tone,
-  sub,
-}: {
-  label: string;
-  value: number | null;
-  format: (n: number) => string;
-  tone?: "positive";
-  sub?: string;
-}) {
-  const animated = useCountUp(value);
+/**
+ * The memoisation result. This is the answer to "does this scale", given as
+ * a measurement rather than an assertion.
+ */
+function CacheCard({ stats }: { stats: CacheStats }) {
+  const top = stats.situations.slice(0, 14);
+  const max = Math.max(1, ...top.map((s) => s.served));
 
   return (
-    <Card>
-      <CardBody>
-        <Text size="small" color="surface.text.gray.muted">
-          {statLabel}
-        </Text>
-        <Heading
-          size="medium"
-          color={tone === "positive" ? "feedback.text.positive.intense" : undefined}
-        >
-          {value == null ? "—" : format(animated)}
-        </Heading>
-        {sub && (
-          <Text size="xsmall" color="surface.text.gray.muted">
-            {sub}
-          </Text>
+    <div className="rr-card">
+      <SectionTitle
+        right={<Chip tone="blue">{`${(stats.reuseRate * 100).toFixed(0)}% reused`}</Chip>}
+      >
+        Decision reuse
+      </SectionTitle>
+
+      <div className="rr-mono" style={{ fontSize: 15, marginBottom: 4 }}>
+        {stats.modelCalls} model calls → {stats.totalDecisions} decisions
+      </div>
+      <div style={{ fontSize: 11, color: "var(--rr-text-3)", marginBottom: 12 }}>
+        {stats.distinctSituations} genuinely distinct situations in this batch
+      </div>
+
+      <div className="rr-constellation">
+        {top.map((s) => {
+          const size = 16 + Math.round((s.served / max) * 26);
+          return (
+            <span
+              key={s.key}
+              className="rr-node"
+              style={{ width: size, height: size }}
+              title={`${s.description} — ${s.served} events`}
+            >
+              {size > 28 ? s.served : ""}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RootCauseCard({
+  byCause,
+}: {
+  byCause: Record<string, { count: number; amount_paise: number }>;
+}) {
+  const entries = Object.entries(byCause).sort((a, b) => b[1].amount_paise - a[1].amount_paise);
+  const max = Math.max(1, ...entries.map(([, s]) => s.amount_paise));
+
+  return (
+    <div className="rr-card">
+      <SectionTitle>By root cause</SectionTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {entries.length === 0 && (
+          <span style={{ fontSize: 12, color: "var(--rr-text-3)" }}>Nothing classified yet.</span>
         )}
-      </CardBody>
-    </Card>
+        {entries.map(([cause, stats]) => (
+          <div key={cause} className="rr-cause">
+            <div
+              className="rr-cause__fill"
+              style={{ width: `${(stats.amount_paise / max) * 100}%` }}
+            />
+            <span>{label(ROOT_CAUSE_LABELS, cause)}</span>
+            <span className="rr-mono" style={{ color: "var(--rr-text-2)" }}>
+              {stats.count} · {rupees(stats.amount_paise)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Two lists, deliberately separate. A holdout control and a negative-EV skip
+ * are the agent exercising judgment; filing them under failures would
+ * present the system's best behaviour as its worst.
+ */
+function ExceptionsCard({
+  unresolved,
+  declined,
+}: {
+  unresolved: { revenue_event_id: string; reason: string }[];
+  declined: { revenue_event_id: string; reason: string }[];
+}) {
+  const render = (
+    items: { revenue_event_id: string; reason: string }[],
+    tone: "red" | "blue"
+  ) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      {items.slice(0, 8).map((e, i) => (
+        <Link
+          key={`${e.revenue_event_id}-${i}`}
+          href={`/dashboard/event/${e.revenue_event_id}`}
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+            textDecoration: "none",
+          }}
+        >
+          <span className="rr-mono" style={{ fontSize: 11, color: "var(--rr-text-3)" }}>
+            {e.revenue_event_id.slice(0, 8).toUpperCase()}
+          </span>
+          <Chip tone={tone}>{reasonLabel(e.reason)}</Chip>
+        </Link>
+      ))}
+      {items.length > 8 && (
+        <span style={{ fontSize: 10.5, color: "var(--rr-text-3)" }}>
+          +{items.length - 8} more
+        </span>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="rr-card">
+      <SectionTitle>Exceptions — could not resolve</SectionTitle>
+      {unresolved.length ? (
+        render(unresolved, "red")
+      ) : (
+        <span style={{ fontSize: 12, color: "var(--rr-text-3)" }}>
+          No unresolved exceptions.
+        </span>
+      )}
+
+      {declined.length > 0 && (
+        <>
+          <div style={{ height: 1, background: "var(--rr-border)", margin: "14px 0" }} />
+          <SectionTitle>Declined on purpose</SectionTitle>
+          {render(declined, "blue")}
+        </>
+      )}
+    </div>
   );
 }

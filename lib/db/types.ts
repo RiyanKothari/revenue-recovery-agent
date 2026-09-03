@@ -199,6 +199,14 @@ export interface RecoveryDb {
   countDecisionsForEvent(revenueEventId: string): Promise<number>;
   insertDecision(row: DecisionInsert): Promise<{ id: string }>;
   insertRecoveryAction(row: RecoveryActionInsert): Promise<void>;
+  /**
+   * How many REAL Razorpay payment links this deployment has created.
+   *
+   * Test mode allows thirty in total, and the guard that rations them cannot
+   * live in module state — a dev server reload resets it, and the budget
+   * silently stops guarding. The database is the only counter that survives.
+   */
+  countLiveLinks(): Promise<number>;
   getCustomerRetryHistory(customerId: string, limit: number): Promise<RetryAttempt[]>;
 
   // --- economics

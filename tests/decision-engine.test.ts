@@ -148,3 +148,36 @@ test("always records the decision and an agent_decided audit entry", async () =>
   assert.ok(decided, "every decision must reach the audit trail");
   assert.equal(decided?.detail.action, "escalate_human");
 });
+
+test("the audit records the model that answered, not the chain that was offered", async () => {
+  // Under quota failover the chain and the answering model routinely differ.
+  // Recording the chain answers "what might have reasoned about this?" when
+  // the trail is supposed to answer "what did?".
+  const { deps, audits } = harness({
+    text: JSON.stringify({
+      action: "send_retry_link_whatsapp",
+      rationale: "Retry after payday.",
+    }),
+    stopReason: "end_turn",
+    model: "gemini:gemini-3.5-flash-lite",
+  } as any);
+
+  await decide(input, deps);
+
+  const decided = audits.find((a) => a.stage === "agent_decided");
+  assert.equal(decided?.detail.model, "gemini:gemini-3.5-flash-lite");
+});
+
+test("without a fallback chain the adapter's own name is recorded", async () => {
+  const { deps, audits } = harness({
+    text: JSON.stringify({
+      action: "send_retry_link_whatsapp",
+      rationale: "Retry after payday.",
+    }),
+    stopReason: "end_turn",
+  });
+
+  await decide(input, deps);
+
+  assert.equal(audits.find((a) => a.stage === "agent_decided")?.detail.model, "fake");
+});

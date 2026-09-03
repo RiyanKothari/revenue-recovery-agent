@@ -1,97 +1,775 @@
 /**
- * Layout, motion and the one typographic risk the design spec calls for.
- * Blade owns colour and component styling — nothing here overrides a Blade
- * token, it only handles what Blade's prop surface doesn't reach: the
- * grid breakpoints, the ledger register, and the feed's arrival animation.
+ * The Recovery Desk — visual layer.
+ *
+ * Blade owns component styling and every colour that has a Blade equivalent.
+ * This file handles what Blade's prop surface does not reach: the page grid,
+ * the ledger register, and the three custom visuals Blade has no component
+ * for — the money river, the execution pipeline, and the policy sliders.
+ *
+ * Tokens mirror Blade's dark scheme rather than inventing a palette, so the
+ * custom visuals sit in the same colour space as the Blade components beside
+ * them instead of looking bolted on.
  */
 
+:root {
+  --rr-bg: #0a0b0d;
+  --rr-surface: #101215;
+  --rr-surface-2: #16191e;
+  --rr-sunken: #08090b;
+  --rr-border: #1f242b;
+  --rr-border-strong: #2c333c;
+
+  --rr-text: #e8edf4;
+  --rr-text-2: #9ba6b4;
+  --rr-text-3: #65707e;
+
+  --rr-blue: #3395ff;
+  --rr-blue-dim: rgba(51, 149, 255, 0.14);
+  --rr-green: #12b981;
+  --rr-green-dim: rgba(18, 185, 129, 0.14);
+  --rr-amber: #f5a524;
+  --rr-amber-dim: rgba(245, 165, 36, 0.13);
+  --rr-red: #f04438;
+  --rr-red-dim: rgba(240, 68, 56, 0.14);
+  --rr-neutral: #5a6472;
+  --rr-neutral-dim: rgba(90, 100, 114, 0.18);
+
+  /* Used exactly twice — the river and the treated bar. A signature, not a
+     decoration: a gradient applied everywhere reads as a template. */
+  --rr-gradient: linear-gradient(135deg, #3395ff 0%, #12b981 100%);
+}
+
+body {
+  background: var(--rr-bg);
+  color: var(--rr-text);
+}
+
 /* --- The ledger register.
-   Monospace is deliberately confined to headings, timestamps and ids — the
-   things that read as "the record of what happened". Body copy stays on
-   Blade's own stack; letting mono sprawl turns this from ledger into
-   generic terminal aesthetic. */
-/* Applied to a wrapper AROUND a Blade component, never inside one: Blade's
-   Text/Heading set their own font-family, and Badge accepts text-only
-   children, so the descendant selector is what actually reaches them. */
+   Monospace is confined to quantities, timestamps, ids and caps headings —
+   the things that read as "the record of what happened". Body copy and
+   rationales stay on Blade's stack; letting mono sprawl turns a ledger into
+   generic terminal aesthetic and costs the design its point of view. */
 .rr-mono,
 .rr-mono * {
   font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
   font-feature-settings: "tnum" 1; /* tabular figures so timestamps don't jitter */
 }
 
-/* --- Ledger-first proportions: the feed is the anchor, not the stats. */
-.rr-columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
-  gap: 24px;
-  align-items: start;
+.rr-caps {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rr-text-2);
 }
+
+/* --- Shell ------------------------------------------------------------- */
+
+.rr-page {
+  min-height: 100vh;
+  background: var(--rr-bg);
+}
+
+.rr-shell {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 24px 48px;
+}
+
+.rr-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 60px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.rr-brand {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--rr-text);
+  white-space: nowrap;
+}
+
+.rr-nav {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.rr-nav a {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--rr-text-2);
+  text-decoration: none;
+  border: 1px dashed transparent;
+}
+
+.rr-nav a:hover {
+  color: var(--rr-text);
+  background: var(--rr-surface);
+}
+
+/* Stitch used a dashed outline to mark the active route. Kept, because it
+   reads as "you are here" without stealing the blue that means "the agent
+   acted" everywhere else on the page. */
+.rr-nav a[data-active="true"] {
+  color: var(--rr-text);
+  border-color: var(--rr-blue);
+  background: var(--rr-blue-dim);
+}
+
+.rr-nav a:focus-visible,
+.rr-slider:focus-visible,
+.rr-btn:focus-visible {
+  outline: 2px solid var(--rr-blue);
+  outline-offset: 2px;
+}
+
+/* --- Pills and chips --------------------------------------------------- */
+
+.rr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.rr-pill--test {
+  background: var(--rr-amber-dim);
+  border-color: rgba(245, 165, 36, 0.4);
+  color: var(--rr-amber);
+  text-transform: uppercase;
+}
+
+.rr-pill--live {
+  background: var(--rr-green-dim);
+  border-color: rgba(18, 185, 129, 0.35);
+  color: var(--rr-green);
+}
+
+.rr-pill--stale {
+  background: var(--rr-amber-dim);
+  border-color: rgba(245, 165, 36, 0.35);
+  color: var(--rr-amber);
+}
+
+.rr-pill--offline {
+  background: var(--rr-red-dim);
+  border-color: rgba(240, 68, 56, 0.35);
+  color: var(--rr-red);
+}
+
+.rr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.rr-chip--green { background: var(--rr-green-dim); color: var(--rr-green); border-color: rgba(18,185,129,.3); }
+.rr-chip--blue { background: var(--rr-blue-dim); color: var(--rr-blue); border-color: rgba(51,149,255,.3); }
+.rr-chip--amber { background: var(--rr-amber-dim); color: var(--rr-amber); border-color: rgba(245,165,36,.3); }
+.rr-chip--red { background: var(--rr-red-dim); color: var(--rr-red); border-color: rgba(240,68,56,.3); }
+.rr-chip--neutral { background: var(--rr-neutral-dim); color: var(--rr-text-2); border-color: var(--rr-border-strong); }
+
+.rr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: rr-pulse 2s ease-in-out infinite;
+}
+
+@keyframes rr-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* --- Cards ------------------------------------------------------------- */
+
+.rr-card {
+  background: var(--rr-surface);
+  border: 1px solid var(--rr-border);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.rr-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* Stat cards carry a colour rail on the leading edge rather than a coloured
+   value, so the row scans as a group and the figures stay legible. */
+.rr-stat {
+  position: relative;
+  background: var(--rr-surface);
+  border: 1px solid var(--rr-border);
+  border-radius: 10px;
+  padding: 14px 16px 14px 20px;
+  overflow: hidden;
+}
+
+.rr-stat::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--rail, var(--rr-neutral));
+}
+
+.rr-stat__label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rr-text-3);
+  margin-bottom: 6px;
+}
+
+.rr-stat__value {
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 500;
+  color: var(--rr-text);
+}
+
+.rr-stat__sub {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--rr-text-3);
+}
+
+/* --- Layout grids ------------------------------------------------------ */
 
 .rr-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+  margin-bottom: 20px;
 }
 
-/* Feed comes first in the DOM, so a single column stacks it above the
-   breakdown and exceptions without any reordering. */
-@media (max-width: 900px) {
-  .rr-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .rr-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.rr-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
 }
 
-/* --- Signature element: each entry is written into the ledger rather than
-   the table silently refreshing. Rows are keyed by audit id, so only
-   genuinely new entries mount and animate; existing rows stay put. */
-@keyframes rr-feed-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+.rr-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.rr-feed-row {
-  animation: rr-feed-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+@media (max-width: 1080px) {
+  .rr-columns { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* --- Live status pill pulse. */
-@keyframes rr-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
+@media (max-width: 720px) {
+  .rr-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rr-header { flex-wrap: wrap; height: auto; padding: 10px 16px; }
+  .rr-nav { margin-left: 0; width: 100%; overflow-x: auto; }
+  .rr-shell { padding: 0 16px 32px; }
 }
 
-.rr-live-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  animation: rr-pulse 2s ease-in-out infinite;
+/* --- The money river --------------------------------------------------- */
+
+.rr-river {
+  position: relative;
+  min-height: 230px;
+  background: var(--rr-sunken);
+  border: 1px solid var(--rr-border);
+  border-radius: 12px;
+  padding: 20px 24px;
+  margin: 20px 0;
+  overflow: hidden;
 }
 
-/* Motion here communicates state change, so when it's unwelcome the state
-   change still has to land — instant, never suppressed. */
-@media (prefers-reduced-motion: reduce) {
-  .rr-feed-row,
-  .rr-live-dot {
-    animation: none;
-  }
+.rr-river__label {
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
 }
 
-.rr-scroll {
-  max-height: 620px;
+.rr-river__total {
+  font-size: 30px;
+  font-weight: 500;
+  color: var(--rr-text);
+  line-height: 1.15;
+}
+
+/* Height follows the viewBox rather than being pinned, otherwise the
+   drawing letterboxes inside a fixed box and every glyph scales down with
+   it. The left-hand label sits over the drawing's empty leading third. */
+.rr-river svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Particles are what make the hero read as live rather than as a chart.
+   Capped in the markup so a long batch cannot cost frames on a projector. */
+@keyframes rr-flow {
+  from { offset-distance: 0%; }
+  to { offset-distance: 100%; }
+}
+
+.rr-particle {
+  offset-rotate: 0deg;
+  animation: rr-flow 9s linear infinite;
+}
+
+.rr-strand {
+  transition: opacity 160ms ease;
+}
+
+.rr-river:hover .rr-strand { opacity: 0.28; }
+.rr-river .rr-strand:hover { opacity: 1; }
+
+/* --- Notice ------------------------------------------------------------ */
+
+.rr-notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--rr-amber-dim);
+  border: 1px solid rgba(245, 165, 36, 0.32);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  color: var(--rr-amber);
+  line-height: 1.5;
+}
+
+.rr-notice--muted { color: var(--rr-text-2); }
+.rr-notice strong { color: var(--rr-amber); }
+
+/* --- Ledger feed ------------------------------------------------------- */
+
+.rr-feed {
+  max-height: 640px;
   overflow-y: auto;
-  /* Keeps a long feed from pushing the exceptions list off the page. */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.rr-feed::-webkit-scrollbar { width: 8px; }
+.rr-feed::-webkit-scrollbar-thumb {
+  background: var(--rr-border-strong);
+  border-radius: 4px;
+}
+
+.rr-row {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--rr-surface);
+  border: 1px solid var(--rr-border);
+  border-left: 3px solid var(--rail, var(--rr-neutral));
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  animation: rr-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.rr-row:hover {
+  border-color: var(--rr-border-strong);
+  border-left-color: var(--rail, var(--rr-neutral));
+  background: var(--rr-surface-2);
+}
+
+@keyframes rr-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.rr-row__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.rr-row__id {
+  font-size: 11px;
+  color: var(--rr-text-3);
+}
+
+.rr-row__amount {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--rr-text);
+  margin-bottom: 6px;
+}
+
+/* The rationale is the explainability artifact and the reason the panel
+   exists, so it gets body treatment rather than a caption. */
+.rr-row__why {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--rr-text-2);
+}
+
+/* --- Lift bars --------------------------------------------------------- */
+
+.rr-bar {
+  position: relative;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--rr-sunken);
+  border: 1px solid var(--rr-border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.rr-bar__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px 0 0 5px;
+  transition: width 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.rr-bar__fill--treated { background: var(--rr-gradient); }
+.rr-bar__fill--control { background: var(--rr-neutral); }
+
+.rr-bar__label {
+  position: relative;
+  z-index: 1;
+  padding-left: 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--rr-text);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+/* The interval is drawn, not just printed. A visible whisker is what
+   communicates "we know how sure we are". */
+.rr-ci {
+  position: relative;
+  height: 22px;
+  margin-top: 6px;
+}
+
+.rr-ci__track {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--rr-border-strong);
+}
+
+.rr-ci__span {
+  position: absolute;
+  top: 7px;
+  height: 7px;
+  border-left: 1px solid var(--rr-blue);
+  border-right: 1px solid var(--rr-blue);
+  border-top: 1px solid var(--rr-blue);
+}
+
+.rr-ci__point {
+  position: absolute;
+  top: 6px;
+  width: 9px;
+  height: 9px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--rr-blue);
+}
+
+/* --- Rules-cost receipt ------------------------------------------------ */
+
+.rr-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+  padding: 4px 0;
+}
+
+.rr-line__label { color: var(--rr-text-2); }
+.rr-line__value { color: var(--rr-text); white-space: nowrap; }
+
+.rr-total {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rr-border);
+}
+
+/* --- Root-cause bars --------------------------------------------------- */
+
+.rr-cause {
+  position: relative;
+  padding: 7px 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+
+.rr-cause__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--rr-blue-dim);
+  border-left: 2px solid var(--rr-blue);
+}
+
+.rr-cause > span { position: relative; z-index: 1; }
+
+/* --- Execution pipeline (trace view) ----------------------------------- */
+
+.rr-pipeline {
+  display: flex;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: 8px 4px 4px;
+  gap: 0;
+}
+
+.rr-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 92px;
+  flex: 1;
+}
+
+.rr-stage__node {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  border: 1.5px solid var(--rr-border-strong);
+  background: var(--rr-surface);
+  color: var(--rr-text-3);
+}
+
+.rr-stage--passed .rr-stage__node {
+  border-color: var(--rr-green);
+  color: var(--rr-green);
+  background: var(--rr-green-dim);
+}
+
+.rr-stage--stopped .rr-stage__node {
+  border-color: var(--rr-amber);
+  color: var(--rr-amber);
+  background: var(--rr-amber-dim);
+  box-shadow: 0 0 0 4px rgba(245, 165, 36, 0.12);
+}
+
+.rr-stage__label {
+  font-size: 11px;
+  color: var(--rr-text-2);
+  text-align: center;
+}
+
+.rr-stage--not_reached .rr-stage__label { color: var(--rr-text-3); }
+
+.rr-stage__time {
+  font-size: 10px;
+  color: var(--rr-text-3);
+}
+
+.rr-connector {
+  flex: 1;
+  height: 1.5px;
+  margin-top: 13px;
+  min-width: 20px;
+  background: var(--rr-green);
+}
+
+.rr-connector--dead {
+  background: none;
+  border-top: 1.5px dashed var(--rr-border-strong);
+  height: 0;
+}
+
+/* --- Policy sliders ---------------------------------------------------- */
+
+.rr-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--rr-border-strong);
+  outline: none;
+  margin: 8px 0 2px;
+}
+
+.rr-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--rr-blue);
+  cursor: pointer;
+  border: 2px solid var(--rr-bg);
+}
+
+.rr-slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--rr-blue);
+  cursor: pointer;
+  border: 2px solid var(--rr-bg);
+}
+
+.rr-btn {
+  width: 100%;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(51, 149, 255, 0.45);
+  background: var(--rr-blue-dim);
+  color: var(--rr-blue);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.rr-btn:hover:not(:disabled) { background: rgba(51, 149, 255, 0.22); }
+.rr-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* --- Comparison table -------------------------------------------------- */
+
+.rr-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+
+.rr-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rr-text-3);
+  padding: 0 10px 10px;
+  border-bottom: 1px solid var(--rr-border);
+}
+
+.rr-table th:not(:first-child),
+.rr-table td:not(:first-child) { text-align: right; }
+
+.rr-table td {
+  padding: 11px 10px;
+  border-bottom: 1px solid var(--rr-border);
+  color: var(--rr-text);
+}
+
+.rr-table tr:last-child td { border-bottom: none; }
+.rr-table .rr-metric { color: var(--rr-text-2); }
+
+/* --- Trace detail cards ------------------------------------------------ */
+
+.rr-trio {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .rr-trio { grid-template-columns: minmax(0, 1fr); }
+}
+
+.rr-pre {
+  background: var(--rr-sunken);
+  border: 1px solid var(--rr-border);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--rr-text-2);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+}
+
+.rr-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--rr-border);
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--rr-text-2);
+  margin-bottom: 7px;
+}
+
+.rr-check--ok { border-color: rgba(18, 185, 129, 0.3); }
+.rr-check--blocked { border-color: rgba(240, 68, 56, 0.35); }
+
+/* --- Cache constellation ----------------------------------------------- */
+
+.rr-constellation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.rr-node {
+  border-radius: 50%;
+  background: var(--rr-blue-dim);
+  border: 1px solid rgba(51, 149, 255, 0.45);
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  color: var(--rr-blue);
+}
+
+/* Motion communicates a state change, so when it is unwelcome the change
+   still has to land — instant, never suppressed. */
+@media (prefers-reduced-motion: reduce) {
+  .rr-row,
+  .rr-dot,
+  .rr-particle { animation: none; }
+  .rr-bar__fill { transition: none; }
 }
