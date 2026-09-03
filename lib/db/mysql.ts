@@ -73,7 +73,14 @@ function toMysqlDatetime(isoString: string): string {
 export function createMysqlDb(connectionUri: string): RecoveryDb {
   const pool = mysql.createPool({
     uri: connectionUri,
-    connectionLimit: 5,
+    // Per-process, and serverless has many processes — see the note in
+    // postgres.ts. Five per lambda exhausts a managed instance's connection
+    // limit under concurrency, and the resulting query failures land on the
+    // fail-closed guardrails, so a traffic spike would look like the agent
+    // deciding to stop acting.
+    connectionLimit:
+      process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? 1 : 5,
+    connectTimeout: 10_000,
     // TiDB Serverless and most managed MySQL require TLS.
     ssl: /localhost|127\.0\.0\.1/.test(connectionUri)
       ? undefined

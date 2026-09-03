@@ -58,7 +58,27 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
     ssl: /localhost|127\.0\.0\.1/.test(connectionString)
       ? undefined
       : { rejectUnauthorized: false },
-    max: 5,
+
+    /**
+     * Pool size is per PROCESS, and serverless has many processes.
+     *
+     * On a long-lived server one pool of five is right. On Vercel each
+     * concurrent invocation gets its own module scope and therefore its own
+     * pool, so five becomes five-per-lambda — a dozen concurrent webhooks
+     * exhausts Supabase's free-tier connection limit and the failures land on
+     * the guardrails, which fail closed and refuse to act. A traffic spike
+     * would present as the agent mysteriously declining to do anything.
+     *
+     * One connection per instance, plus a short idle timeout so instances
+     * that go quiet release it rather than holding it for the platform's
+     * whole freeze window. Pair this with a pooled connection string
+     * (Supabase's transaction pooler on 6543) — see docs/DEPLOY.md.
+     */
+    max: process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? 1 : 5,
+    idleTimeoutMillis: process.env.VERCEL ? 10_000 : 30_000,
+    // A hosted database across the public internet needs longer than the
+    // 0ms default to establish TLS before it is called unreachable.
+    connectionTimeoutMillis: 10_000,
   });
 
   const query = async <T = any>(text: string, params: unknown[] = []): Promise<T[]> => {
