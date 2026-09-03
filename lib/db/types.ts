@@ -258,6 +258,22 @@ export interface RecoveryDb {
     { id: string; amount_paise: number; root_cause: string | null; customer_id: string | null }[]
   >;
 
+  /**
+   * The decision and outcome for ONE event.
+   *
+   * The trace view previously found these by loading every decision and every
+   * outcome in the batch and filtering in memory — nine hundred rows fetched
+   * to use one. Free against a local database and roughly a megabyte per page
+   * view once the database is a network hop away.
+   */
+  findDecisionForEvent(revenueEventId: string): Promise<DecisionRow | null>;
+  findOutcomeForEvent(revenueEventId: string): Promise<{
+    revenue_event_id: string;
+    recovered: boolean;
+    recovered_amount_paise: number | null;
+    resolved_at: string | null;
+  } | null>;
+
   // --- conformance verifier
   listDecisions(): Promise<DecisionRow[]>;
   listRecoveryActions(): Promise<RecoveryActionRow[]>;

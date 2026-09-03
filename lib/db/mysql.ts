@@ -587,6 +587,33 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       }));
     },
 
+    async findDecisionForEvent(revenueEventId: string): Promise<DecisionRow | null> {
+      const rows = await query<any>(
+        `select id, revenue_event_id, chosen_action, rationale, from_cache, cache_key
+           from agent_decisions where revenue_event_id = ?
+          order by decided_at asc limit 1`,
+        [revenueEventId]
+      );
+      if (rows.length === 0) return null;
+      return { ...rows[0], from_cache: bool(rows[0].from_cache) };
+    },
+
+    async findOutcomeForEvent(revenueEventId: string) {
+      const rows = await query<any>(
+        `select revenue_event_id, recovered, recovered_amount_paise, resolved_at
+           from outcomes where revenue_event_id = ? limit 1`,
+        [revenueEventId]
+      );
+      if (rows.length === 0) return null;
+      return {
+        revenue_event_id: rows[0].revenue_event_id,
+        recovered: bool(rows[0].recovered),
+        recovered_amount_paise:
+          rows[0].recovered_amount_paise === null ? null : Number(rows[0].recovered_amount_paise),
+        resolved_at: rows[0].resolved_at ? iso(rows[0].resolved_at) : null,
+      };
+    },
+
     async listDecisions(): Promise<DecisionRow[]> {
       const rows = await query<any>(
         "select id, revenue_event_id, chosen_action, rationale, from_cache, cache_key from agent_decisions"

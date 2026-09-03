@@ -39,11 +39,15 @@ export async function GET(
   try {
     const db = getDb();
 
-    const [auditRows, events, decisions, outcomes] = await Promise.all([
+    // Four targeted reads. This used to fetch every decision and every
+    // outcome in the batch to pick one of each — nine hundred rows to use
+    // one, which is free locally and a megabyte per page view once the
+    // database is a network hop away.
+    const [auditRows, events, decision, outcome] = await Promise.all([
       db.listAuditForEvent(eventId),
       db.listEventsByIds([eventId]),
-      db.listDecisions(),
-      db.listOutcomes(),
+      db.findDecisionForEvent(eventId),
+      db.findOutcomeForEvent(eventId),
     ]);
 
     const event = events[0] ?? null;
@@ -60,8 +64,6 @@ export async function GET(
     }
 
     const trace = buildTrace(auditRows);
-    const decision = decisions.find((d) => d.revenue_event_id === eventId) ?? null;
-    const outcome = outcomes.find((o) => o.revenue_event_id === eventId) ?? null;
 
     return NextResponse.json({
       event_id: eventId,

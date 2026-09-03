@@ -498,3 +498,62 @@ forEachDriver("an empty id list returns nothing rather than everything", async (
   // dashboard the entire table.
   assert.deepEqual(await db.listEventsByIds([]), [], driver);
 });
+
+forEachDriver("a single event's decision and outcome are fetched directly", async (db, driver) => {
+  // These replaced a full-table load that pulled every decision in the batch
+  // to use one of them.
+  const id = await newEvent(db, `single_${driver}`);
+
+  assert.equal(await db.findDecisionForEvent(id), null, `${driver}: no decision yet`);
+  assert.equal(await db.findOutcomeForEvent(id), null, `${driver}: no outcome yet`);
+
+  await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  const decision = await db.findDecisionForEvent(id);
+  assert.equal(decision?.chosen_action, "send_retry_link_whatsapp", driver);
+  assert.equal(decision?.rationale, "contract test", driver);
+
+  await db.insertOutcome({
+    revenue_event_id: id,
+    recovered: true,
+    recovered_amount_paise: 4321,
+    recovered_payment_id: `${RUN}_single_${driver}`,
+    attribution_window_minutes: 1440,
+    resolved_at: new Date().toISOString(),
+  });
+
+  const outcome = await db.findOutcomeForEvent(id);
+  assert.equal(outcome?.recovered, true, driver);
+  assert.equal(outcome?.recovered_amount_paise, 4321, `${driver}: amount is numeric`);
+  assert.ok(outcome?.resolved_at, `${driver}: resolved_at survives`);
+});
+
+forEachDriver("a resumed event's FIRST decision is the one returned", async (db, driver) => {
+  // A resumed delivery can write a second decision. The first is the one that
+  // governed the action actually taken, so it is the one the trace must show.
+  const id = await newEvent(db, `twodec_${driver}`);
+
+  await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "first",
+    bounded_by: [],
+  });
+  await new Promise((r) => setTimeout(r, 25));
+  await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "escalate_human",
+    rationale: "second",
+    bounded_by: [],
+  });
+
+  assert.equal((await db.findDecisionForEvent(id))?.rationale, "first", driver);
+});
