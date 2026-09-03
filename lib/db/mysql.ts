@@ -321,8 +321,9 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
     async insertRecoveryAction(row: RecoveryActionInsert) {
       await exec(
         `insert into recovery_actions
-           (id, agent_decision_id, channel, action_type, status, attempt_number, razorpay_payment_link_id)
-         values (?,?,?,?,?,?,?)`,
+           (id, agent_decision_id, channel, action_type, status, attempt_number,
+            razorpay_payment_link_id, executed_at)
+         values (?,?,?,?,?,?,?, coalesce(?, current_timestamp(3)))`,
         [
           randomUUID(),
           row.agent_decision_id,
@@ -331,6 +332,7 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           row.status,
           row.attempt_number,
           row.razorpay_payment_link_id ?? null,
+          row.executed_at ? toMysqlDatetime(row.executed_at) : null,
         ]
       );
     },

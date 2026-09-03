@@ -83,6 +83,17 @@ export interface DecisionRow {
 
 export interface RecoveryActionInsert {
   agent_decision_id: string;
+  /**
+   * When the send happened, on the event's timeline rather than the server's.
+   *
+   * In production these coincide and this is a no-op. In a backfilled batch
+   * they do not: events carry historical timestamps while the sends run now,
+   * which puts every action *after* every event and makes the cooldown
+   * unanswerable — a guardrail asking about a customer's past finds only
+   * contact from its future. Stamping the action with the event's time keeps
+   * the timeline internally consistent.
+   */
+  executed_at?: string;
   channel: string;
   action_type: string;
   status: string;

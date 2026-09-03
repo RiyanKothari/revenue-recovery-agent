@@ -418,6 +418,9 @@ async function processEvent({
     currency: paymentEntity.currency ?? "INR",
     customerContact: paymentEntity.contact,
     attemptNumber: await getNextAttemptNumber(eventId),
+    // Keeps the send on the same timeline as the failure — see the cooldown
+    // note in lib/guardrails.ts.
+    eventTimeIso,
   });
 
   return NextResponse.json({ status: "processed", action: decision.action });

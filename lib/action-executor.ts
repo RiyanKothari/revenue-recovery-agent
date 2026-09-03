@@ -45,11 +45,17 @@ export async function executeAction(
     currency: string;
     customerContact: string;
     attemptNumber: number;
+    /**
+     * The event's own time, stamped onto the recorded action so the send sits
+     * on the same timeline as the failure it answers. Omitted in production,
+     * where they are the same moment.
+     */
+    eventTimeIso?: string;
   },
   deps: Partial<ExecutorDeps> = {}
 ) {
   const { db, createLink, sendWhatsApp, audit } = resolveDeps(deps);
-  const { decision, revenueEventId, agentDecisionId } = params;
+  const { decision, revenueEventId, agentDecisionId, eventTimeIso } = params;
 
   /**
    * An action that happened but wasn't recorded is worse than one that never
@@ -63,7 +69,9 @@ export async function executeAction(
     channel: string
   ) => {
     try {
-      await db.insertRecoveryAction(row);
+      // Stamped here rather than at each call site: every recorded action
+      // goes through this funnel, so the timeline cannot drift between them.
+      await db.insertRecoveryAction({ ...row, executed_at: eventTimeIso ?? row.executed_at });
     } catch (err: any) {
       await audit(revenueEventId, "action_executed", {
         channel,
