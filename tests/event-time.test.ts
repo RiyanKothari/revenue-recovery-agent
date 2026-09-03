@@ -5,6 +5,7 @@ import {
   syntheticCreatedAt,
   uniqueCustomerCount,
   customerIndexFor,
+  simulatedRecoveryAt,
 } from "../scripts/generate-synthetic-batch";
 
 /**
@@ -150,4 +151,36 @@ test("a batch of one does not divide by zero", () => {
   const single = syntheticCreatedAt(0, 1, NOW.getTime());
   assert.ok(Number.isFinite(single));
   assert.equal(resolveEventTime(single, NOW).rejected, undefined);
+});
+
+// --- attribution timing -----------------------------------------------------
+
+test("a simulated recovery lands after its failure and inside the window", () => {
+  // Stamping recoveries "now" put every one of them days after its failure
+  // and outside the 24h attribution window, which discarded most of them and
+  // drove measured lift negative.
+  const failedAt = "2026-08-28T09:00:00.000Z";
+
+  for (const id of ["evt_a", "evt_b", "evt_c", "0f3c-91ab", "zzz"]) {
+    const recoveredMs = simulatedRecoveryAt(id, failedAt) * 1000;
+    const gapMinutes = (recoveredMs - new Date(failedAt).getTime()) / 60000;
+
+    assert.ok(gapMinutes > 0, `${id} recovered before it failed`);
+    assert.ok(gapMinutes < 24 * 60, `${id} fell outside the attribution window`);
+  }
+});
+
+test("simulated recovery timing is deterministic across runs", () => {
+  const failedAt = "2026-08-28T09:00:00.000Z";
+  assert.equal(simulatedRecoveryAt("evt_x", failedAt), simulatedRecoveryAt("evt_x", failedAt));
+});
+
+test("different events recover at different speeds", () => {
+  // A constant gap would make "average time to recovery" a single number
+  // dressed up as a distribution.
+  const failedAt = "2026-08-28T09:00:00.000Z";
+  const gaps = new Set(
+    ["a", "b", "c", "d", "e", "f"].map((id) => simulatedRecoveryAt(id, failedAt))
+  );
+  assert.ok(gaps.size > 1);
 });

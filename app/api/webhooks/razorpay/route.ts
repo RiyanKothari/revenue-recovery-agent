@@ -73,6 +73,8 @@ export async function POST(req: NextRequest) {
         razorpayOrderId: paymentEntity.order_id,
         recoveredPaymentId: paymentEntity.id,
         recoveredAmountPaise: paymentEntity.amount,
+        // The success entity carries its own time, same as the failure did.
+        recoveredAtIso: resolveEventTime(paymentEntity.created_at).receivedAt ?? undefined,
       });
     }
     return NextResponse.json({ status: "outcome_recorded" });

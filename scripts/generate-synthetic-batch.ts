@@ -211,6 +211,20 @@ async function seedConsent(size: number) {
 const ASSUMED_TREATED_CONVERSION = 0.34;
 const ASSUMED_CONTROL_CONVERSION = 0.19;
 
+/**
+ * When a simulated recovery lands: 20 minutes to 20 hours after the failure,
+ * comfortably inside the 24h attribution window. Derived from the event id
+ * rather than random so a re-run produces the same measured averages.
+ */
+export function simulatedRecoveryAt(eventId: string, failedAtIso: string): number {
+  let hash = 0;
+  for (const ch of eventId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+
+  const minutes = 20 + (hash % 1180); // 20 min .. ~20 h
+  const millis = new Date(failedAtIso).getTime() + minutes * 60_000;
+  return Math.floor(millis / 1000);
+}
+
 async function simulateOutcomes() {
   if (process.env.SIMULATE_OUTCOMES === "false") {
     console.log("\nSkipping simulated recoveries (SIMULATE_OUTCOMES=false).");
@@ -252,6 +266,18 @@ async function simulateOutcomes() {
             order_id: orderId,
             amount: event.amount_paise,
             currency: "INR",
+            /**
+             * The recovery sits on the failure's timeline, a realistic gap
+             * later — not at whatever moment the seeding script happens to
+             * run. Stamping it "now" put every recovery days after its
+             * failure and outside the 24h attribution window, which silently
+             * discarded most of them and drove measured lift negative.
+             *
+             * Deterministic in the event id so re-runs reproduce the same
+             * durations, and spread across the window so "average time to
+             * recovery" has a distribution rather than a constant.
+             */
+            created_at: simulatedRecoveryAt(event.id, event.received_at),
           },
         },
       },
