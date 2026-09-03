@@ -60,8 +60,11 @@ function fakeDb(behaviour: Behaviour): GuardrailDb {
   };
 }
 
+/** A fixed event time keeps the cooldown window deterministic across runs. */
+const EVENT_TIME = "2026-09-03T12:00:00.000Z";
+
 const check = (behaviour: Behaviour) =>
-  checkGuardrails("cust_1", "evt_1", fakeDb(behaviour));
+  checkGuardrails("cust_1", "evt_1", EVENT_TIME, fakeDb(behaviour));
 
 test("allows an action when every check is clear", async () => {
   const result = await check(permissive());
@@ -165,10 +168,62 @@ test("respects a policy with a different retry ceiling", async () => {
   const result = await checkGuardrails(
     "cust_1",
     "evt_1",
+    EVENT_TIME,
     fakeDb({ ...permissive(), actionCount: 1 }),
     strict
   );
 
   assert.equal(result.allowed, false);
   assert.equal(result.reason, "max_retry_attempts_reached");
+});
+
+/**
+ * The cooldown asks a question about the customer's past, not about our
+ * server's clock. Razorpay retries deliveries with backoff, so these differ.
+ */
+test("the cooldown window is measured from the event, not from now", async () => {
+  const windows: { since: string; until: string }[] = [];
+
+  const db = {
+    ...fakeDb(permissive()),
+    async hasActionForCustomerSince(_c: string, since: string, until: string) {
+      windows.push({ since, until });
+      return false;
+    },
+  };
+
+  const eventTime = "2026-09-01T06:00:00.000Z"; // two days before "now"
+  await checkGuardrails("cust_1", "evt_1", eventTime, db);
+
+  assert.equal(windows.length, 1);
+  // 240-minute default cooldown, measured backwards from the event.
+  assert.equal(windows[0].since, "2026-09-01T02:00:00.000Z");
+  assert.equal(windows[0].until, eventTime);
+});
+
+test("a send that happened after the event cannot block it", async () => {
+  // The window is bounded at both ends. An open-ended "since" would let a
+  // message sent later than the event count as prior contact — blocking an
+  // event on something that had not happened when it arrived.
+  let upperBound: string | undefined;
+
+  const db = {
+    ...fakeDb(permissive()),
+    async hasActionForCustomerSince(_c: string, _s: string, until: string) {
+      upperBound = until;
+      return false;
+    },
+  };
+
+  const eventTime = "2026-09-01T06:00:00.000Z";
+  await checkGuardrails("cust_1", "evt_1", eventTime, db);
+
+  assert.equal(upperBound, eventTime);
+});
+
+test("an unreadable event time refuses rather than guessing", async () => {
+  const result = await checkGuardrails("cust_1", "evt_1", "not-a-date", fakeDb(permissive()));
+
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "guardrail_check_failed:event_time");
 });

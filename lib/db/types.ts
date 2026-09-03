@@ -35,6 +35,12 @@ export interface RevenueEventInsert {
   customer_id: string | null;
   customer_contact: string | null;
   raw_payload: unknown;
+  /**
+   * When the payment actually failed, from the Razorpay entity's own
+   * `created_at`. Omitted when the payload does not carry one, in which case
+   * the column defaults to now().
+   */
+  received_at?: string;
 }
 
 export interface RevenueEventRow {
@@ -159,7 +165,21 @@ export interface RecoveryDb {
   // --- guardrails
   getConsent(customerId: string): Promise<{ dnd: boolean } | null>;
   countActionsForEvent(revenueEventId: string): Promise<number>;
-  hasActionForCustomerSince(customerId: string, sinceIso: string): Promise<boolean>;
+  /**
+   * Was this customer contacted inside the window [sinceIso, untilIso]?
+   *
+   * The upper bound is not optional decoration. A backdated or
+   * delayed-delivery event is processed after sends that happened later than
+   * the event itself, and an open-ended "since" would count those as prior
+   * contact — blocking an event on a message that had not been sent when it
+   * arrived. The cooldown is a question about the customer's past, so the
+   * query has to be bounded at both ends.
+   */
+  hasActionForCustomerSince(
+    customerId: string,
+    sinceIso: string,
+    untilIso: string
+  ): Promise<boolean>;
   getEventPaymentId(revenueEventId: string): Promise<string | null>;
   /** True when a refund/dispute stopping rule was already recorded. */
   hasDisputeFlag(revenueEventId: string): Promise<boolean>;

@@ -162,8 +162,8 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
         `insert into revenue_events
            (id, razorpay_event_id, event_type, razorpay_payment_id, razorpay_order_id,
             amount_paise, currency, error_code, error_description, payment_method,
-            customer_id, customer_contact, raw_payload)
-         values (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            customer_id, customer_contact, raw_payload, received_at)
+         values (?,?,?,?,?,?,?,?,?,?,?,?,?, coalesce(?, current_timestamp(3)))`,
         [
           id,
           row.razorpay_event_id,
@@ -178,6 +178,9 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           row.customer_id,
           row.customer_contact,
           JSON.stringify(row.raw_payload),
+          // MySQL will not parse an ISO string with a trailing Z into
+          // datetime(3); hand it the format the column expects.
+          row.received_at ? row.received_at.replace("T", " ").replace("Z", "") : null,
         ],
         id
       );
@@ -220,15 +223,17 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       return Number(rows[0]?.count ?? 0);
     },
 
-    async hasActionForCustomerSince(customerId, sinceIso) {
+    async hasActionForCustomerSince(customerId, sinceIso, untilIso) {
       const rows = await query(
         `select 1 as hit
            from recovery_actions ra
            join agent_decisions ad on ad.id = ra.agent_decision_id
            join revenue_events re on re.id = ad.revenue_event_id
-          where re.customer_id = ? and ra.executed_at >= ?
+          where re.customer_id = ?
+            and ra.executed_at >= ?
+            and ra.executed_at <= ?
           limit 1`,
-        [customerId, toMysqlDatetime(sinceIso)]
+        [customerId, toMysqlDatetime(sinceIso), toMysqlDatetime(untilIso)]
       );
       return rows.length > 0;
     },

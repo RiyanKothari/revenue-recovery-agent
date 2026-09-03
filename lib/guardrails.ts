@@ -40,6 +40,22 @@ export interface GuardrailResult {
 export async function checkGuardrails(
   customerId: string,
   revenueEventId: string,
+  /**
+   * When the payment failed — NOT when this check runs.
+   *
+   * Required rather than defaulted to now(), because a "now" default is what
+   * made this wrong in the first place. Razorpay retries webhook deliveries
+   * with backoff, so an event can be processed hours after the payment it
+   * describes, and asking "was this customer contacted in the four hours
+   * before *this moment*" answers a question about our server's clock rather
+   * than the customer's experience. Under a delayed delivery the two windows
+   * do not overlap at all: the guardrail holds perfectly while examining the
+   * wrong four hours.
+   *
+   * Making it a parameter also means the cooldown is a pure function of
+   * recorded times, which is what lets the replay engine reproduce it exactly.
+   */
+  eventTimeIso: string,
   db: GuardrailDb = getDb(),
   policy: RecoveryPolicy = DEFAULT_POLICY
 ): Promise<GuardrailResult> {
@@ -68,13 +84,25 @@ export async function checkGuardrails(
   }
 
   // 3. Cooldown window since the last nudge to this customer, across events.
+  // Measured backwards from when the payment failed, not from now.
+  const eventTimeMs = new Date(eventTimeIso).getTime();
+  if (!Number.isFinite(eventTimeMs)) {
+    // An unreadable event time makes the window unknowable, and a guardrail
+    // that cannot evaluate its own rule refuses.
+    return { allowed: false, reason: "guardrail_check_failed:event_time" };
+  }
+
   const cooldownCutoff = new Date(
-    Date.now() - policy.cooldownMinutes * 60 * 1000
+    eventTimeMs - policy.cooldownMinutes * 60 * 1000
   ).toISOString();
 
   let recentlyContacted: boolean;
   try {
-    recentlyContacted = await db.hasActionForCustomerSince(customerId, cooldownCutoff);
+    recentlyContacted = await db.hasActionForCustomerSince(
+      customerId,
+      cooldownCutoff,
+      eventTimeIso
+    );
   } catch {
     return { allowed: false, reason: "guardrail_check_failed:cooldown" };
   }

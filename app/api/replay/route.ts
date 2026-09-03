@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { DEFAULT_POLICY, type RecoveryPolicy } from "@/lib/policy";
-import { comparePolicies, type ReplayEvent } from "@/lib/replay";
+import {
+  comparePolicies,
+  compareToRecorded,
+  replayPolicy,
+  type ReplayDisposition,
+  type ReplayEvent,
+} from "@/lib/replay";
 import { estimateRecoveryProbability } from "@/lib/propensity";
 import { getObservedStats } from "@/lib/propensity-store";
 
@@ -73,6 +79,9 @@ export async function POST(request: Request) {
       db.listAssignments(),
       db.listOutcomes(),
     ]);
+
+    // Stopping rules, for the fidelity check below.
+    const stops = await db.listStoppingRules();
 
     const dndByCustomer = new Map(consent.map((c) => [c.customer_id, c.dnd]));
     const eventIdByDecision = new Map(decisions.map((d) => [d.id, d.revenue_event_id]));
@@ -174,6 +183,41 @@ export async function POST(request: Request) {
       }
     }
 
+    /**
+     * What actually happened, per event, in the replay engine's own
+     * vocabulary — so the engine can be pointed at the policy that really ran
+     * and checked against the record. A counterfactual tool that cannot
+     * reproduce the past has no business predicting an alternative one, and
+     * "the gates are deterministic" is an argument, not evidence.
+     */
+    const RECORDED_DISPOSITIONS: Record<string, ReplayDisposition> = {
+      customer_dnd_opt_out: "blocked_dnd",
+      max_retry_attempts_reached: "blocked_retry_ceiling",
+      cooldown_window_active: "blocked_cooldown",
+      negative_expected_value: "declined_negative_ev",
+      holdout_control: "holdout_control",
+    };
+
+    const recorded = new Map<string, string>();
+    for (const stop of stops) {
+      // First stop wins, matching how the pipeline halts.
+      const mapped = RECORDED_DISPOSITIONS[stop.reason];
+      if (mapped && !recorded.has(stop.revenue_event_id)) {
+        recorded.set(stop.revenue_event_id, mapped);
+      }
+    }
+    // An event that reached a decision without stopping was acted on.
+    for (const decision of decisions) {
+      if (!recorded.has(decision.revenue_event_id)) {
+        recorded.set(decision.revenue_event_id, "acted");
+      }
+    }
+
+    const fidelity = compareToRecorded(
+      replayPolicy(replayEvents, DEFAULT_POLICY),
+      recorded
+    );
+
     const candidate = clampPolicy(body);
     const comparison = comparePolicies(
       replayEvents,
@@ -191,6 +235,14 @@ export async function POST(request: Request) {
         maxRetryAttempts: candidate.maxRetryAttempts,
       },
       ...comparison,
+
+      /**
+       * How faithfully the engine reproduces the run that actually happened.
+       * Published alongside every counterfactual so the reader can weigh the
+       * prediction by the engine's demonstrated accuracy rather than by
+       * assertion.
+       */
+      fidelity,
       /**
        * Stated in the payload, not only in the UI. Anything consuming this
        * endpoint has to be able to tell which half is a recomputation and

@@ -235,3 +235,80 @@ export function comparePolicies(
     estimate: observed ? estimateRecovery(candidateResult, observed) : null,
   };
 }
+
+// --- fidelity --------------------------------------------------------------
+
+/**
+ * Does the replay engine actually reproduce the run that happened?
+ *
+ * A counterfactual tool is only worth the confidence you place in it, and
+ * "trust me, the gates are deterministic" is not evidence. So the engine is
+ * pointed at the policy that actually ran and its answer is compared against
+ * the recorded history. If it cannot reproduce the past, it has no business
+ * predicting an alternative one.
+ *
+ * This found something real the first time it was run: replay reported 21
+ * events blocked on consent where the audit trail recorded 23. The replay was
+ * right — only 21 events belong to a customer with DND set, and the extra two
+ * were residue from a resume-path bug that evaluated one customer's consent
+ * while recording the action against another. A third independent check
+ * agreeing with the conformance verifier is worth more than either alone.
+ *
+ * Divergence is therefore reported, never smoothed over. Two causes are
+ * expected and legitimate:
+ *
+ *   - **Cooldown drift.** The live run evaluated the cooldown against the
+ *     contacts recorded *at that moment*; replay sees the finished history.
+ *     An event processed early saw fewer prior contacts than replay does, so
+ *     replay is marginally stricter. This is inherent to replaying
+ *     order-dependent state and cannot be engineered away — only disclosed.
+ *
+ *   - **Corrected history.** Where a past bug recorded the wrong outcome,
+ *     replay computes the right one and disagrees. That is the tool working.
+ */
+export interface FidelityReport {
+  eventsCompared: number;
+  agreed: number;
+  agreementRate: number;
+  /** Disposition pairs that differed, most common first. */
+  divergences: { replayed: ReplayDisposition; recorded: string; count: number }[];
+  note: string;
+}
+
+export function compareToRecorded(
+  result: ReplayResult,
+  recorded: Map<string, string>
+): FidelityReport {
+  let agreed = 0;
+  let compared = 0;
+  const divergences = new Map<string, number>();
+
+  for (const outcome of result.outcomes) {
+    const actual = recorded.get(outcome.eventId);
+    // An event with no recorded disposition was never resolved either way —
+    // counting it as agreement would inflate the score with absences.
+    if (actual === undefined) continue;
+
+    compared += 1;
+    if (actual === outcome.disposition) {
+      agreed += 1;
+      continue;
+    }
+
+    const key = `${outcome.disposition}|${actual}`;
+    divergences.set(key, (divergences.get(key) ?? 0) + 1);
+  }
+
+  return {
+    eventsCompared: compared,
+    agreed,
+    agreementRate: compared ? agreed / compared : 0,
+    divergences: [...divergences.entries()]
+      .map(([key, count]) => {
+        const [replayed, recordedValue] = key.split("|");
+        return { replayed: replayed as ReplayDisposition, recorded: recordedValue, count };
+      })
+      .sort((a, b) => b.count - a.count),
+    note: "Replay evaluates cooldown against the finished contact history, so it is marginally stricter than the live run, which saw only the contacts recorded at the time. Remaining divergence is either that effect or history the replay has corrected.",
+  };
+}

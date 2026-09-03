@@ -68,6 +68,58 @@ export function isDndCustomer(customerIndex: number): boolean {
   return customerIndex % Math.round(1 / DND_CUSTOMER_RATE) === 0;
 }
 
+/**
+ * How far back the batch's failures are spread.
+ *
+ * The first version stamped every event with the moment it was POSTed, which
+ * compressed a realistic week of payment failures into ninety seconds. That
+ * is not a cosmetic problem: with every event arriving inside the same
+ * minute, the cooldown window behaves identically for any value between two
+ * minutes and thirty days, so the guardrail could not be exercised, the
+ * Policy Lab's most interesting knob moved nothing, and "average time to
+ * recovery" measured the speed of the seeding script.
+ *
+ * Real failures arrive spread across days, so the batch says so. Deterministic
+ * (derived from the index, not random) to keep re-runs reproducible.
+ */
+const BATCH_WINDOW_DAYS = 7;
+
+export function syntheticCreatedAt(i: number, size: number, now = Date.now()): number {
+  const windowMs = BATCH_WINDOW_DAYS * 86_400_000;
+  const pool = uniqueCustomerCount(size);
+
+  /**
+   * First-time failures spread evenly across the window, oldest first.
+   */
+  const firstFailureAt = (index: number) => {
+    const offsetMs = pool <= 1 ? 0 : (windowMs * (pool - 1 - index)) / (pool - 1);
+    return now - offsetMs;
+  };
+
+  if (i < pool) return Math.floor(firstFailureAt(i) / 1000);
+
+  /**
+   * A repeat failure follows its customer's FIRST failure by a few hours,
+   * not by a week.
+   *
+   * Spreading every event evenly made repeat attempts land days apart, which
+   * put all of them outside any sane cooldown window — so the cooldown
+   * guardrail became unreachable a second time, in the opposite direction
+   * from the original bug. It is also simply wrong: a customer whose payment
+   * fails usually retries the same day, not the following week.
+   *
+   * The gap alternates either side of the 240-minute default so the batch
+   * contains both events the cooldown blocks and events it lets through.
+   * A batch where the rule always fires demonstrates it no better than one
+   * where it never does.
+   */
+  const customerIndex = customerIndexFor(i, size);
+  const insideCooldown = i % 2 === 0;
+  const gapHours = insideCooldown ? 1.5 : 9;
+
+  return Math.floor((firstFailureAt(customerIndex) + gapHours * 3_600_000) / 1000);
+}
+
 export function generateBatch(size = 55) {
   return Array.from({ length: size }, (_, i) => {
     const reason = weightedPick(FAILURE_REASONS);
@@ -95,6 +147,10 @@ export function generateBatch(size = 55) {
               // index, so a repeat customer really is the same person.
               customer_id: `cust_synthetic_${customerIndex}`,
               contact: `+${fakePhone(customerIndex)}`,
+              // Razorpay sends this on every payment entity. The pipeline
+              // keys its time-based rules off it rather than off delivery
+              // time — see lib/event-time.ts.
+              created_at: syntheticCreatedAt(i, size),
             },
           },
         },

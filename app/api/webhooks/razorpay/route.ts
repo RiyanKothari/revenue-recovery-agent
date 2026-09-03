@@ -13,6 +13,7 @@ import { assignArm } from "@/lib/experiment";
 import { estimateRecoveryProbability } from "@/lib/propensity";
 import { getObservedStats } from "@/lib/propensity-store";
 import { evaluateExpectedValue } from "@/lib/expected-value";
+import { resolveEventTime } from "@/lib/event-time";
 
 /**
  * The one entry point for every "revenue at risk" signal in this project.
@@ -198,6 +199,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  /**
+   * Record when the payment failed, not when the webhook landed. Razorpay
+   * retries deliveries with backoff, so those differ — and a delayed delivery
+   * would otherwise look freshly arrived and slip past the cooldown window
+   * that exists to protect the customer from a second nudge.
+   */
+  const eventTime = resolveEventTime(paymentEntity.created_at);
+
   let inserted;
   try {
     inserted = await db.insertRevenueEvent({
@@ -213,6 +222,7 @@ export async function POST(req: NextRequest) {
       customer_id: paymentEntity.customer_id ?? paymentEntity.contact ?? null,
       customer_contact: paymentEntity.contact ?? null,
       raw_payload: payload,
+      received_at: eventTime.receivedAt ?? undefined,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? "insert_failed" }, { status: 500 });
@@ -228,6 +238,10 @@ export async function POST(req: NextRequest) {
   await logAudit(inserted.id, "event_received", {
     razorpay_event_id: razorpayEventId,
     amount_paise: paymentEntity.amount,
+    // A refused timestamp is recorded rather than dropped: silently falling
+    // back to now() would hide a payload trying to backdate itself out of a
+    // cooldown window.
+    ...(eventTime.rejected ? { created_at_rejected: eventTime.rejected } : {}),
   });
 
   return guarded(inserted.id, () => processEvent({ eventId: inserted.id, paymentEntity }));
@@ -313,7 +327,12 @@ async function processEvent({
     });
   }
 
-  const guardrailResult = await checkGuardrails(customerId, eventId);
+  // The cooldown is measured from when the payment failed, so the guardrail
+  // is handed the event's own time rather than reading the clock.
+  const eventTimeIso =
+    resolveEventTime(paymentEntity.created_at).receivedAt ?? new Date().toISOString();
+
+  const guardrailResult = await checkGuardrails(customerId, eventId, eventTimeIso);
 
   if (!guardrailResult.allowed) {
     await logAudit(eventId, "stopping_rule_triggered", {

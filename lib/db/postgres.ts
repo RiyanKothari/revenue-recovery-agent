@@ -133,8 +133,8 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
         `insert into revenue_events
            (razorpay_event_id, event_type, razorpay_payment_id, razorpay_order_id,
             amount_paise, currency, error_code, error_description, payment_method,
-            customer_id, customer_contact, raw_payload)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            customer_id, customer_contact, raw_payload, received_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, coalesce($13::timestamptz, now()))
          returning id`,
         [
           row.razorpay_event_id,
@@ -149,6 +149,7 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           row.customer_id,
           row.customer_contact,
           JSON.stringify(row.raw_payload),
+          row.received_at ?? null,
         ]
       );
     },
@@ -190,15 +191,17 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       return Number(rows[0]?.count ?? 0);
     },
 
-    async hasActionForCustomerSince(customerId, sinceIso) {
+    async hasActionForCustomerSince(customerId, sinceIso, untilIso) {
       const rows = await query(
         `select 1
            from recovery_actions ra
            join agent_decisions ad on ad.id = ra.agent_decision_id
            join revenue_events re on re.id = ad.revenue_event_id
-          where re.customer_id = $1 and ra.executed_at >= $2
+          where re.customer_id = $1
+            and ra.executed_at >= $2
+            and ra.executed_at <= $3
           limit 1`,
-        [customerId, sinceIso]
+        [customerId, sinceIso, untilIso]
       );
       return rows.length > 0;
     },
