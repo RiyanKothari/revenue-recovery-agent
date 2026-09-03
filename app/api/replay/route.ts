@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { apiError } from "@/lib/api-errors";
 import { DEFAULT_POLICY, type RecoveryPolicy } from "@/lib/policy";
 import {
   comparePolicies,
@@ -255,10 +256,7 @@ export async function POST(request: Request) {
           "Recovered rupees. Nobody knows whether a customer who was never contacted would have paid; the estimate applies conversion rates measured on the arms that actually ran.",
       },
     });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "replay_failed", detail: err?.message ?? "unknown" },
-      { status: 500 }
-    );
+  } catch (err) {
+    return apiError("replay_failed", 500, err);
   }
 }

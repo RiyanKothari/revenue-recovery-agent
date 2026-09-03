@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { apiError } from "@/lib/api-errors";
 import { summariseCache } from "@/lib/decision-cache";
 
 export const dynamic = "force-dynamic";
@@ -20,10 +21,7 @@ export async function GET() {
   try {
     const decisions = await getDb().listDecisions();
     return NextResponse.json(summariseCache(decisions));
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "cache_stats_query_failed", detail: err?.message ?? "unknown" },
-      { status: 500 }
-    );
+  } catch (err) {
+    return apiError("cache_stats_query_failed", 500, err);
   }
 }

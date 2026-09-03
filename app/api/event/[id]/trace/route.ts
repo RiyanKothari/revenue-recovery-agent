@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { buildTrace } from "@/lib/trace";
+import { apiError, looksLikeEventId } from "@/lib/api-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,19 @@ export async function GET(
 ) {
   const eventId = params.id;
 
+  /**
+   * Checked before the query, not after it fails. Event ids are UUIDs, so
+   * anything else raises a cast error in the database — which this route used
+   * to report as a 500 carrying the driver's own message. A request for an id
+   * that cannot exist is a client mistake, and it is answerable without
+   * touching the database at all.
+   */
+  if (!looksLikeEventId(eventId)) {
+    // The id is not echoed back: the caller already knows what it asked for,
+    // and reflecting arbitrary input adds a liability for no information.
+    return NextResponse.json({ error: "event_not_found" }, { status: 404 });
+  }
+
   try {
     const db = getDb();
 
@@ -40,7 +54,9 @@ export async function GET(
      * the most alarming thing this screen could imply, and untrue.
      */
     if (!event && auditRows.length === 0) {
-      return NextResponse.json({ error: "event_not_found", id: eventId }, { status: 404 });
+      // The id is not echoed back: the caller already knows what it asked for,
+    // and reflecting arbitrary input adds a liability for no information.
+    return NextResponse.json({ error: "event_not_found" }, { status: 404 });
     }
 
     const trace = buildTrace(auditRows);
@@ -58,10 +74,7 @@ export async function GET(
       // to see it rather than take the summary's word for it.
       audit: auditRows,
     });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "trace_query_failed", detail: err?.message ?? "unknown" },
-      { status: 500 }
-    );
+  } catch (err) {
+    return apiError("trace_query_failed", 500, err);
   }
 }

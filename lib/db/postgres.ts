@@ -427,9 +427,20 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
     },
 
     async listStoppingRules() {
+      /**
+       * Ordered oldest-first, because the callers treat the FIRST row for an
+       * event as the one that stopped it — later rows are consequences, not
+       * competing causes. Without an ORDER BY the database returns rows
+       * plan-dependently, so an event with two stopping rules (which a
+       * webhook retry produces routinely) would be attributed to whichever
+       * row came back first. The money river's buckets and the replay
+       * fidelity comparison both read this, so the same batch could report
+       * different numbers on consecutive queries.
+       */
       const rows = await query<any>(
         `select revenue_event_id, detail->>'reason' as reason
-           from audit_log where stage = 'stopping_rule_triggered'`
+           from audit_log where stage = 'stopping_rule_triggered'
+          order by created_at asc, id asc`
       );
       return rows.map((r) => ({
         revenue_event_id: r.revenue_event_id,

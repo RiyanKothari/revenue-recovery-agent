@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { apiError } from "@/lib/api-errors";
 import { computeLift, type ArmOutcome } from "@/lib/experiment";
 import { DEFAULT_POLICY } from "@/lib/policy";
 import { bucketOutcomes } from "@/lib/outcome-buckets";
@@ -32,11 +33,8 @@ export async function GET() {
       db.listDecisionEventIds(),
       db.listAssignments(),
     ]);
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "summary_query_failed", detail: err?.message ?? "unknown" },
-      { status: 500 }
-    );
+  } catch (err) {
+    return apiError("summary_query_failed", 500, err);
   }
 
   const totalAtRiskPaise = events.reduce((s, e) => s + e.amount_paise, 0);

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { apiError } from "@/lib/api-errors";
 
 // Without this Next prerenders this handler at build time and the "live"
 // feed never advances past the build-time snapshot.
@@ -32,10 +33,7 @@ export async function GET() {
     }));
 
     return NextResponse.json({ feed });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "audit_feed_query_failed", detail: err?.message ?? "unknown" },
-      { status: 500 }
-    );
+  } catch (err) {
+    return apiError("audit_feed_query_failed", 500, err);
   }
 }
