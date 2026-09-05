@@ -367,10 +367,12 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
     async getCustomerRetryHistory(customerId, limit) {
       const rows = await query<any>(
-        `select ra.attempt_number, ra.channel, ra.status
+        `select ra.attempt_number, ra.channel, ra.status,
+                coalesce(o.recovered, 0) as converted
            from recovery_actions ra
            join agent_decisions ad on ad.id = ra.agent_decision_id
            join revenue_events re on re.id = ad.revenue_event_id
+           left join outcomes o on o.revenue_event_id = re.id
           where re.customer_id = ?
           order by ra.executed_at asc
           limit ?`,
@@ -381,6 +383,7 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           attempt_number: Number(r.attempt_number),
           channel: r.channel,
           status: r.status,
+          converted: bool(r.converted),
         })
       );
     },

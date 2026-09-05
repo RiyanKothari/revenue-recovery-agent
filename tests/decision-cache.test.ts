@@ -223,3 +223,81 @@ test("useCache false forces a fresh call even when a hit exists", async () => {
   assert.equal(h.calls(), 1);
   assert.equal(result.rationale, "fresh");
 });
+
+/**
+ * Whether a previous nudge actually worked is the single most
+ * decision-relevant fact about a prior attempt, and it was the one fact the
+ * agent could not see: `status` describes whether the MESSAGE went out, not
+ * whether the customer paid. A nudge delivered perfectly and ignored, and one
+ * delivered and acted on, reached the model as the same string.
+ */
+const CTX = {
+  classification: {
+    root_cause: "insufficient_funds",
+    payment_method: "card",
+    is_recoverable: true,
+  },
+  amountPaise: 250000,
+};
+
+test("a customer who converted before is a different situation from one who did not", () => {
+  // If these shared a key, the second would be handed a rationale written
+  // about the first — and the cache's honesty property is precisely that a
+  // cached rationale is true of every event sharing its key.
+  const converted = decisionContextKey({
+    ...CTX,
+    customerRetryHistory: [
+      { attempt_number: 1, channel: "whatsapp", status: "sent", converted: true },
+    ],
+  } as any);
+
+  const ignored = decisionContextKey({
+    ...CTX,
+    customerRetryHistory: [
+      { attempt_number: 1, channel: "whatsapp", status: "sent", converted: false },
+    ],
+  } as any);
+
+  assert.notEqual(converted, ignored);
+});
+
+test("the prompt says whether the earlier attempt worked", () => {
+  const prompt = decisionPrompt({
+    ...CTX,
+    customerRetryHistory: [
+      { attempt_number: 1, channel: "whatsapp", status: "sent", converted: false },
+    ],
+  } as any);
+
+  assert.match(prompt, /no recovery/i, "the agent must be able to see it failed to convert");
+  assert.match(prompt, /whatsapp/i);
+});
+
+test("a converted attempt reads as converted", () => {
+  const prompt = decisionPrompt({
+    ...CTX,
+    customerRetryHistory: [
+      { attempt_number: 1, channel: "email", status: "sent", converted: true },
+    ],
+  } as any);
+  assert.match(prompt, /paid afterwards/i);
+});
+
+test("the key and the prompt still agree on what they encode", () => {
+  // The cache's whole correctness argument is that both derive from the same
+  // inputs. Any field added to one must reach the other.
+  const a = { ...CTX, customerRetryHistory: [{ attempt_number: 1, channel: "whatsapp", status: "sent", converted: true }] } as any;
+  const b = { ...CTX, customerRetryHistory: [{ attempt_number: 1, channel: "whatsapp", status: "sent", converted: false }] } as any;
+
+  assert.notEqual(decisionContextKey(a), decisionContextKey(b), "keys differ");
+  assert.notEqual(decisionPrompt(a), decisionPrompt(b), "prompts differ too");
+});
+
+test("history with no conversion field is treated as not converted", () => {
+  // Older rows and hand-built contexts must not silently read as successes.
+  const key = decisionContextKey({
+    ...CTX,
+    customerRetryHistory: [{ attempt_number: 1, channel: "whatsapp", status: "sent" }],
+  } as any);
+  assert.match(key, /converted:no/);
+});

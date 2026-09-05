@@ -624,3 +624,44 @@ forEachDriver("two simultaneous decisions leave exactly one", async (db, driver)
     `${driver}: all three report the same decision id`
   );
 });
+
+forEachDriver("retry history says whether the earlier attempt converted", async (db, driver) => {
+  // The agent is meant to reason "WhatsApp twice already, no conversion,
+  // escalate". It could not: `status` describes whether the message went
+  // out, never whether the customer paid.
+  const id = await newEvent(db, `conv_${driver}`);
+  const customer = eventRow(`conv_${driver}`).customer_id!;
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "sent",
+    attempt_number: 1,
+  });
+
+  const before = await db.getCustomerRetryHistory(customer, 10);
+  assert.equal(before.length, 1, driver);
+  assert.equal(before[0].converted, false, `${driver}: nothing recovered yet`);
+
+  await db.insertOutcome({
+    revenue_event_id: id,
+    recovered: true,
+    recovered_amount_paise: 123400,
+    recovered_payment_id: `${RUN}_conv_${driver}`,
+    attribution_window_minutes: 1440,
+    resolved_at: new Date().toISOString(),
+  });
+
+  const after = await db.getCustomerRetryHistory(customer, 10);
+  assert.equal(after[0].converted, true, `${driver}: the recovery is now visible`);
+  assert.equal(typeof after[0].converted, "boolean", `${driver}: a real boolean, not 0/1`);
+});

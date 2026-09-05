@@ -39,7 +39,12 @@ export function amountBand(amountPaise: number): string {
 export interface DecisionContext {
   classification: Classification;
   amountPaise: number;
-  customerRetryHistory: { attempt_number: number; channel: string; status: string }[];
+  customerRetryHistory: {
+    attempt_number: number;
+    channel: string;
+    status: string;
+    converted?: boolean;
+  }[];
 }
 
 /**
@@ -53,12 +58,26 @@ export function decisionContextKey(input: DecisionContext): string {
     .sort()
     .join(",");
 
+  /**
+   * Whether anything tried on this customer has ever worked.
+   *
+   * Part of the key because it is now part of the prompt, and the two must
+   * derive from the same inputs or a cached rationale stops being true of
+   * every event sharing its key. A customer whose last WhatsApp converted
+   * and one whose last WhatsApp was ignored are different situations that
+   * warrant different answers; without this they would collide on the same
+   * cache entry and the second would be handed reasoning written about the
+   * first.
+   */
+  const everConverted = input.customerRetryHistory.some((a) => a.converted === true);
+
   return [
     input.classification.root_cause,
     input.classification.payment_method,
     amountBand(input.amountPaise),
     `attempts:${input.customerRetryHistory.length}`,
     `tried:${priorChannels || "none"}`,
+    `converted:${everConverted ? "yes" : "no"}`,
   ].join("|");
 }
 
@@ -77,7 +96,12 @@ export function decisionPrompt(input: DecisionContext): string {
 
   const history = input.customerRetryHistory.length
     ? input.customerRetryHistory
-        .map((a) => `attempt ${a.attempt_number} via ${a.channel} (${a.status})`)
+        .map(
+          (a) =>
+            `attempt ${a.attempt_number} via ${a.channel} (${a.status}, ${
+              a.converted ? "customer paid afterwards" : "no recovery"
+            })`
+        )
         .join("; ")
     : "none";
 

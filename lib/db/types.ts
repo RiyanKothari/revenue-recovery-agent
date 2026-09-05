@@ -137,7 +137,19 @@ export interface AuditRow {
 export interface RetryAttempt {
   attempt_number: number;
   channel: string;
+  /** DELIVERY status — sent, failed, simulated. Not whether it worked. */
   status: string;
+  /**
+   * Whether the payment this attempt chased was ultimately recovered.
+   *
+   * The agent is supposed to reason "WhatsApp twice already, no conversion,
+   * escalate" — and it could not, because everything it was told was about
+   * whether the MESSAGE went out, never whether the customer paid. A nudge
+   * that was delivered perfectly and ignored, and one that was delivered and
+   * worked, arrived at the model as the same string. The single most
+   * decision-relevant fact about a prior attempt was the one fact missing.
+   */
+  converted: boolean;
 }
 
 /** Signals a unique-constraint hit without leaking the engine's error code. */
