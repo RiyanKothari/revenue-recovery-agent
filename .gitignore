@@ -11,3 +11,7 @@ vercel-env.txt
 .env.local.bak
 vercel-env-update.txt
 vercel-env-full.txt
+.vercel
+
+.vercel
+.env*
