@@ -6,6 +6,51 @@ An agent that detects revenue-at-risk events (starting with failed payments), re
 
 This project is explicitly positioned as the **explainability and audit layer** on top of the failed-payment recovery pattern Razorpay validated in its own Sprint 2026 launch (WhatsApp re-engagement for failed autopay debits, UPI mandate retry) — not a generic recovery bot built from the brief alone.
 
+## What it measured
+
+From a 1,200-event batch run through the real webhook route — not a mock, not a fixture:
+
+| | |
+|---|---|
+| Recovery rate | **25.7%** (308 of 1,200) |
+| Measured lift vs holdout | **+14.0pp**, 95% CI [5.4, 22.6] — significant |
+| Incremental recovery | **₹4,72,868** |
+| Safety conformance | **5,415 checks, 0 violations** across 7 invariants |
+| Model calls | **11**, serving 908 decisions (99% reused) |
+
+The lift is the number the holdout exists for. Everything above it is attribution;
+that line is measurement — a slice of eligible events is deliberately left
+untreated, and the gap between the arms is recovery the agent can claim to have
+*caused*.
+
+The batch is synthetic and the dashboard says so on screen. Recoveries are
+generated from a stated assumption, so the lift demonstrates the measurement
+machinery working rather than evidencing real customer behaviour. That
+distinction is the project's whole thesis, so it is on the page rather than in
+this README.
+
+## For reviewers — three screens and what to look for
+
+1. **`/dashboard`** — the ledger. Read a rationale, then click the row.
+2. **`/dashboard/event/[id]`** — that payment's full path, reconstructed from
+   `audit_log` alone. Note the order: guardrails run *before* the agent, and
+   an event stopped there visibly never reaches it.
+3. **`/dashboard/policy`** — replay recorded history under a different policy.
+   No model call, nothing sent, nothing written. It publishes its own fidelity
+   against the run it is modelling.
+
+Three findings worth the detour, all documented in
+[`docs/BUILD-CHALLENGES.md`](docs/BUILD-CHALLENGES.md):
+
+- The conformance verifier caught a **real DND violation** nothing else could
+  see — the resume path evaluated one customer's consent while recording the
+  action against another. Every component reported success.
+- The signature check had an **authentication bypass**: `createHmac` with an
+  empty key does not throw, so an unset webhook secret accepted forged
+  deliveries. `.env.local` ships that variable blank.
+- The cooldown asked about the wrong four hours. It measured from `now()`, not
+  from when the payment failed — and Razorpay retries webhook deliveries.
+
 ## What makes it bounded, not just prompted
 
 The claim "explainable and gated" is enforced in code, not asked for in a system prompt:
@@ -78,16 +123,16 @@ Then fill in the rest of `.env.local` from `.env.example` and verify every exter
 npm run preflight
 ```
 
-Preflight checks all five dependencies and names exactly what is misconfigured — env vars, database connection and schema, Razorpay REST auth, the MCP merchant token (including the trailing-newline mistake `echo` introduces), Claude model access, and WhatsApp credentials. It exits non-zero on anything blocking.
+Preflight checks all five dependencies and names exactly what is misconfigured — env vars, database connection and schema, Razorpay REST auth, the MCP merchant token (including the trailing-newline mistake `echo` introduces), the configured decision model (only the provider DECISION_PROVIDER selects — it never bills the other one), and WhatsApp credentials including the template's approval status AND language code. It exits non-zero on anything blocking.
 
 ```bash
 npm run dev
-npm run seed:batch    # posts 800 synthetic events through the real webhook route
+npm run seed:batch 1200   # posts 1,200 synthetic events through the real webhook route
 ```
 
 Dashboard: `/dashboard`
 
-> **Before seeding with live WhatsApp credentials:** the synthetic batch uses plausible *real* Indian mobile numbers. Set `WHATSAPP_DRY_RUN=true` (the default in `.env.example`) or `WHATSAPP_TEST_RECIPIENT` to a number you control. The executor refuses seeded-looking recipients when neither is set.
+> **Before seeding with live WhatsApp credentials:** the synthetic batch uses plausible *real* Indian mobile numbers. Dry run is the default **in code** — sending requires an explicit `WHATSAPP_DRY_RUN=false`, so a blank or malformed value logs rather than sends. Set `WHATSAPP_TEST_RECIPIENT` to a number you control before ever disabling it. The executor refuses seeded-looking recipients when neither is set.
 
 ## Tests
 
