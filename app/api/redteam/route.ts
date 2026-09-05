@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runRedTeam } from "@/lib/redteam";
-import { apiError } from "@/lib/api-errors";
+import { apiError, rateLimited } from "@/lib/api-errors";
+import { pruneRateLimits, rateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,10 @@ export const dynamic = "force-dynamic";
  * its own purpose.
  */
 export async function GET() {
+  pruneRateLimits();
+  const limit = rateLimit("redteam", 30, 60_000);
+  if (!limit.allowed) return rateLimited(limit.retryAfterSeconds);
+
   try {
     const results = await runRedTeam(process.env.RAZORPAY_WEBHOOK_SECRET);
     const held = results.filter((r) => r.blocked).length;

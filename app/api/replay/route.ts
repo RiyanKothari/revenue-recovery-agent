@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { apiError } from "@/lib/api-errors";
+import { apiError, rateLimited } from "@/lib/api-errors";
+import { pruneRateLimits, rateLimit } from "@/lib/rate-limit";
 import { DEFAULT_POLICY, type RecoveryPolicy } from "@/lib/policy";
 import {
   comparePolicies,
@@ -60,6 +61,17 @@ function clampPolicy(body: ReplayRequest): RecoveryPolicy {
 }
 
 export async function POST(request: Request) {
+  /**
+   * This reads every event, decision, action and outcome in the batch and
+   * re-runs the gates over all of them. It is public and idempotent, so the
+   * exposure is not data — it is that anyone can ask a deployed instance to
+   * do that repeatedly at the database's expense. Twenty a minute is far
+   * more than the Policy Lab's slider needs and far less than a loop wants.
+   */
+  pruneRateLimits();
+  const limit = rateLimit("replay", 20, 60_000);
+  if (!limit.allowed) return rateLimited(limit.retryAfterSeconds);
+
   let body: ReplayRequest = {};
   try {
     body = (await request.json()) ?? {};

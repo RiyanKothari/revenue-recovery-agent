@@ -506,7 +506,13 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
         `select revenue_event_id,
                 JSON_UNQUOTE(JSON_EXTRACT(detail, '$.reason')) as reason
            from audit_log where stage = 'stopping_rule_triggered'
-          order by created_at asc, id asc`
+          -- Ordered by time alone. An id tiebreak was here and was
+          -- misleading: the ids are random UUIDs, so ordering by one is a
+          -- coin flip dressed as determinism. Two stopping rules for the
+          -- same event cannot share a timestamp in practice, since the
+          -- pipeline writes them from sequential awaits, and pretending to
+          -- break a tie that cannot happen only hides that.
+          order by created_at asc`
       );
       return rows.map((r) => ({
         revenue_event_id: r.revenue_event_id,

@@ -25,6 +25,20 @@ export function apiError(
 }
 
 /**
+ * A refusal that tells the caller when to come back.
+ *
+ * A bare 429 with no Retry-After leaves a well-behaved client guessing, and
+ * guessing clients retry immediately — which is the traffic the limit exists
+ * to shed.
+ */
+export function rateLimited(retryAfterSeconds: number): NextResponse {
+  return NextResponse.json(
+    { error: "rate_limited", retry_after_seconds: retryAfterSeconds },
+    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } }
+  );
+}
+
+/**
  * Whether a string could be an event id at all.
  *
  * Event ids are UUIDs, and the database says so — handing it anything else

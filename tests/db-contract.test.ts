@@ -36,6 +36,18 @@ const MY_URL = process.env.TEST_MYSQL_URL ?? "mysql://root:local@127.0.0.1:3307/
 /** Namespaced so a run never collides with the seeded demo batch. */
 const RUN = `ctr_${Date.now().toString(36)}`;
 
+/**
+ * Gap between writes whose ORDER is being asserted.
+ *
+ * These tests check that rows come back oldest-first, which means they need
+ * the rows to have distinguishable timestamps. Twenty-five milliseconds is
+ * enough against an idle database and not obviously enough against a loaded
+ * one — and a test that fails only under load is worse than no test, because
+ * it teaches you to ignore red. Wide enough that clock resolution and write
+ * batching cannot close it.
+ */
+const ORDERING_GAP_MS = 120;
+
 interface Target {
   name: string;
   db: RecoveryDb | null;
@@ -260,7 +272,7 @@ forEachDriver("stopping rules come back oldest first", async (db, driver) => {
   const id = await newEvent(db, `order_${driver}`);
 
   await db.insertAudit(id, "stopping_rule_triggered", { reason: "customer_dnd_opt_out" });
-  await new Promise((r) => setTimeout(r, 25));
+  await new Promise((r) => setTimeout(r, ORDERING_GAP_MS));
   await db.insertAudit(id, "stopping_rule_triggered", { reason: "negative_expected_value" });
 
   const mine = (await db.listStoppingRules()).filter((s) => s.revenue_event_id === id);
@@ -273,7 +285,7 @@ forEachDriver("a per-event audit trail reads forwards", async (db, driver) => {
   const id = await newEvent(db, `trace_${driver}`);
 
   await db.insertAudit(id, "event_received", { step: 1 });
-  await new Promise((r) => setTimeout(r, 25));
+  await new Promise((r) => setTimeout(r, ORDERING_GAP_MS));
   await db.insertAudit(id, "classified", { step: 2 });
 
   const rows = await db.listAuditForEvent(id);
@@ -546,7 +558,7 @@ forEachDriver("a resumed event's FIRST decision is the one returned", async (db,
     rationale: "first",
     bounded_by: [],
   });
-  await new Promise((r) => setTimeout(r, 25));
+  await new Promise((r) => setTimeout(r, ORDERING_GAP_MS));
   await db.insertDecision({
     revenue_event_id: id,
     root_cause: "insufficient_funds",
