@@ -8,3 +8,4 @@ tsconfig.tsbuildinfo
 
 # Deploy-time secrets, pasted into Vercel. Never committed.
 vercel-env.txt
+.env.local.bak

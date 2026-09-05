@@ -2,7 +2,7 @@
   "name": "revenue-recovery-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Track 03 — AI Revenue Recovery. Detects revenue-at-risk events from Razorpay, reasons over root cause with a guardrailed agent, and executes bounded recovery via Razorpay's own MCP server.",
+  "description": "Track 03 \u2014 AI Revenue Recovery. Detects revenue-at-risk events from Razorpay, reasons over root cause with a guardrailed agent, and executes bounded recovery via Razorpay's own MCP server.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -11,7 +11,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "verify": "tsx scripts/verify.ts",
     "seed:batch": "tsx scripts/generate-synthetic-batch.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "razorpay:swap": "tsx scripts/swap-razorpay-key.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
