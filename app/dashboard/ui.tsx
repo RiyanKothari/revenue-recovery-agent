@@ -106,6 +106,7 @@ export const DELIBERATE_REASONS = new Set(["holdout_control", "negative_expected
 const NAV = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/policy", label: "Policy Lab" },
+  { href: "/dashboard/redteam", label: "Red Team" },
 ];
 
 export type FeedStatus = "connecting" | "live" | "offline";
