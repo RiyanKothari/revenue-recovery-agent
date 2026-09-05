@@ -8,17 +8,22 @@
  * exposure is not data, it is that anyone can ask a deployed instance to do
  * a lot of work repeatedly, for free, at the database's expense.
  *
- * Deliberately NOT presented as protection against a determined attacker.
- * The counter lives in module memory, and serverless gives each concurrent
- * instance its own — so the real ceiling is the limit multiplied by however
- * many instances are warm. That makes this a guard against accidental
- * hammering and casual abuse, which is the actual risk profile of a demo
- * deployment, and nothing more. Saying so here rather than letting the next
- * reader assume otherwise: a limiter believed to be stronger than it is, is
- * worse than none.
+ * ON VERCEL THIS DOES ALMOST NOTHING, and that is measured rather than
+ * assumed. The counter lives in module memory and each concurrent lambda
+ * instance gets its own, so thirty-four consecutive requests against a limit
+ * of thirty all returned 200 in production — the platform had spread them
+ * across enough instances that no single counter ever reached its limit.
  *
- * A real deployment puts this at the edge — Vercel's own rate limiting, or a
- * shared store like Redis — where the count is not per-process.
+ * It is kept because it is genuinely effective wherever the process is
+ * long-lived — local development, a container, a single Node server — and
+ * because a sequential burst from one client does often land on one warm
+ * instance. It is not kept under any illusion that it hardens the deployed
+ * endpoint.
+ *
+ * The real fix is a shared counter: Vercel's own edge rate limiting, Redis,
+ * or a table in the database this is protecting — one cheap upsert to refuse
+ * an expensive scan. That is the change to make before this is exposed to
+ * traffic that is not a demo.
  */
 
 interface Window {
