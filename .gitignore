@@ -15,3 +15,9 @@ vercel-env-full.txt
 
 .vercel
 .env*
+
+# Submission and pitch material. Useful to me, noise in a repo someone is
+# reading to understand the system.
+docs/SUBMISSION.md
+docs/DEMO-SCRIPT.md
+docs/FRONTEND-BLUEPRINT.md
