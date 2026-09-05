@@ -104,3 +104,81 @@ test("matches on error_code alone when no description is present", () => {
   assert.equal(result.root_cause, "gateway_error");
   assert.equal(result.is_recoverable, true);
 });
+
+/**
+ * Real Razorpay payloads, which the synthetic generator never produced.
+ *
+ * The classifier was written against our own generator's shape — error_code
+ * plus a prose error_description — so every rule was tuned against sentences
+ * we had written ourselves. A genuine failure arrives with a description of
+ * "Payment failed", which carries nothing, and the actual signal two keys
+ * away in fields nothing was reading.
+ */
+test("a real Razorpay failure is classified from its structured fields", () => {
+  const result = classify({
+    error_code: "BAD_REQUEST_ERROR",
+    error_description: "Payment failed",
+    error_reason: "payment_failed",
+    error_source: "gateway",
+    error_step: "payment_authorization",
+    payment_method: "card",
+  });
+
+  assert.notEqual(result.root_cause, "unknown", "this used to fall through to human review");
+  assert.equal(result.root_cause, "gateway_error");
+  assert.equal(result.is_recoverable, true);
+});
+
+test("the structured reason beats the prose description", () => {
+  // The description would match nothing; the reason names the cause exactly.
+  const result = classify({
+    error_code: "BAD_REQUEST_ERROR",
+    error_description: "Payment failed",
+    error_reason: "insufficient_funds",
+    error_source: "issuer",
+    payment_method: "card",
+  });
+  assert.equal(result.root_cause, "insufficient_funds");
+});
+
+test("error_source is a fallback, not a substitute for the reason", () => {
+  // Only consulted when the reason is absent or unrecognised — it says
+  // something broke, not what.
+  const known = classify({ error_reason: "card_declined", error_source: "gateway" });
+  assert.equal(known.root_cause, "card_declined", "reason wins over source");
+
+  const unknownReason = classify({ error_reason: "something_new_from_razorpay", error_source: "bank" });
+  assert.equal(unknownReason.root_cause, "bank_timeout", "source used when reason is unrecognised");
+});
+
+test("a fraud-flagged reason stays non-recoverable", () => {
+  // The one automated action that could do real harm is chasing a payment
+  // the issuer suspects is fraudulent.
+  for (const reason of ["fraudulent_payment", "suspected_fraud"]) {
+    const r = classify({ error_reason: reason, error_source: "issuer" });
+    assert.equal(r.is_recoverable, false, `${reason} must not be retried`);
+  }
+});
+
+test("an unrecognised reason AND source still fails closed", () => {
+  const r = classify({
+    error_code: "SOMETHING_NEW",
+    error_description: "an error we have never seen",
+    error_reason: "brand_new_reason",
+    error_source: "brand_new_source",
+  });
+  assert.equal(r.root_cause, "unknown");
+  assert.equal(r.is_recoverable, false);
+});
+
+test("the synthetic batch's prose payloads still classify as before", () => {
+  // The new path must not regress the old one — the seeded batch carries no
+  // structured fields at all.
+  const r = classify({
+    error_code: "BAD_REQUEST_ERROR",
+    error_description: "Payment failed due to insufficient funds in the account.",
+    payment_method: "card",
+  });
+  assert.equal(r.root_cause, "insufficient_funds");
+  assert.equal(r.is_recoverable, true);
+});

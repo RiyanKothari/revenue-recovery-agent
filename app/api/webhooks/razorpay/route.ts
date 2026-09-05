@@ -293,6 +293,11 @@ async function processEvent({
     error_code: paymentEntity.error_code,
     error_description: paymentEntity.error_description,
     payment_method: paymentEntity.method,
+    // Razorpay's structured taxonomy, which real payloads carry and the
+    // synthetic generator never emitted — see lib/classifier.ts.
+    error_reason: paymentEntity.error_reason,
+    error_source: paymentEntity.error_source,
+    error_step: paymentEntity.error_step,
   });
 
   await getDb().setClassification(
