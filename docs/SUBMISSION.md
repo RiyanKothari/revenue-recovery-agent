@@ -69,85 +69,65 @@ https://github.com/RiyanKothari/revenue-recovery-agent
 
 ## Build Challenges and Technical Obstacles
 
-Ten things that changed the system. Most exist only because I pointed it at
-real Razorpay traffic instead of my own fixtures.
+Six that changed the system. Most exist only because I pointed it at real
+Razorpay traffic instead of my own fixtures.
 
 **1. An empty secret that verified everything.** `createHmac("sha256", "")`
-does not throw, it just HMACs with a key everyone knows. My `.env` template
+does not throw. It quietly HMACs with a key everyone knows. My `.env` template
 ships that secret blank, so an unconfigured clone accepted forged webhooks and
-looked rigorous doing it. I then forgot the variable in Vercel the same day,
-and the fix refused six real Razorpay deliveries.
+looked rigorous doing it. Anyone could have posted fake payment failures and
+had my agent create real payment links. I then forgot the variable in Vercel
+the same day, and the fix refused six real Razorpay deliveries.
 
-**2. Thirty payment links. Ever.** My MCP calls started failing, so I rewrote
-the client for a cached-promise bug, then restructured imports for a bundling
-bug. Neither existed. Razorpay test mode allows thirty links per account in
-total, and everything past that fails like a transient fault. Meanwhile my
-dashboard filled with "delivery failed" rows for messages nobody was ever sent,
-which is how I learned an exhausted test account is a configuration problem and
-not a customer outcome.
+**2. Thirty payment links. Ever. And I diagnosed it wrong twice.** My MCP calls
+started failing mid-batch, so I rewrote the client for a cached-promise bug,
+then restructured imports for a bundling bug. Neither existed. Razorpay test
+mode allows thirty links per account in total, and everything past that fails
+looking like a transient fault. Meanwhile my dashboard filled with "delivery
+failed" rows for messages nobody was ever sent, which is how I learned that an
+exhausted test account is a configuration problem and not a customer outcome.
 
-**3. Failing a payment on purpose is the hard part.** A wrong OTP gives
-"verification failed", skipping it gives a state you did not expect, and then
-it asks for six digits again. Not trivial at 1am when you cannot tell whether
-the problem is Razorpay, your webhook URL, your signature check or the tunnel.
-What unblocked me was showing refused events *and the reason*, so a rejected
-webhook stops looking like one that never arrived.
+**3. I wrote the fixtures and the parser, and got both wrong the same way.**
+Real Razorpay failures arrive with `error_description: "Payment failed"`, which
+says nothing, and the actual cause sits two keys away in `error_reason` and
+`error_source`. My classifier had been reading prose I invented myself, so it
+scored perfectly on my data and returned `unknown` on the real thing. Synthetic
+testing cannot catch that by construction, because the same person writes both
+sides. Those rows are still in the production audit trail on purpose.
 
-**4. I wrote the fixtures and the parser, and got both wrong the same way.**
-Real failures arrive with `error_description: "Payment failed"`, which says
-nothing, and the actual cause two keys away in `error_reason` and
-`error_source`. My classifier was reading prose I had invented myself, so real
-events came back `unknown`. Synthetic testing cannot catch that by
-construction. Those rows are still in the production trail on purpose.
+**4. Accepted is not delivered.** Meta returns 200 with a message id for any
+recipient, then silently drops numbers not on your allowed list. Three messages
+were logged as delivered and none arrived, which on a project whose whole
+argument is an honest audit trail is the worst bug available. It now records
+Meta's own word alongside the id, and a callback endpoint takes the real status
+later. Worth knowing if you are starting cold: Meta's API Setup tokens expire
+in about 24 hours, and mine died overnight looking exactly like a delivery
+failure.
 
 **5. Two payment links, four seconds apart.** Razorpay delivered one webhook
-twice at once. My idempotency check read then wrote, the requests interleaved,
-and neither guardrail could see it: the retry ceiling read zero twice, and the
-cooldown's window ends at the event's own timestamp. Only a unique constraint
-closes that. My test fires three inserts concurrently, because the sequential
-version passes without it.
+twice at once. My idempotency check read and then wrote, the two requests
+interleaved between them, and neither guardrail could see it: the retry ceiling
+read zero twice, and the cooldown's window ends at the event's own timestamp.
+That is exactly the harm the guardrails exist to prevent, and no amount of
+application level care closes the gap. A unique constraint does. My test fires
+three inserts concurrently, because the sequential version passes without it.
 
-**6. Accepted is not delivered.** Meta returns 200 with a message id for any
-recipient and silently drops numbers not on your allowed list. Three messages
-were logged as delivered and none arrived, which on a project about honest
-audit trails is the worst possible bug. It now stores Meta's own word plus the
-id. Also worth knowing: API Setup tokens expire in about 24 hours, and mine
-died overnight looking exactly like a delivery failure.
-
-**7. My cooldown asked about the wrong four hours.** It measured back from
-`Date.now()` instead of from the failure, and Razorpay retries webhooks with
-backoff, so under a delayed delivery the two windows never overlap at all. The
-rule holds perfectly while examining the wrong period. I only caught it because
-a replay slider moved nothing, which then revealed my batch had compressed a
-week of failures into ninety seconds.
-
-**8. Reproducible on paper, random in fact.** Three `Math.random()` calls meant
-two identical runs disagreed, and on one the confidence interval crossed zero
-and the dashboard called the effect unestablished. Seeding it (on the Razorpay
-order id, not the database UUID that regenerates) exposed the real problem: 33
-control observations cannot resolve a 15 point difference. It was underpowered
-before it ever ran.
-
-**9. Eleven model calls served 908 decisions.** A 20 request daily quota forced
-memoisation on the *situation* rather than the event. The cache key and the
-prompt come from one function and the prompt carries an amount band, so two
-events sharing a key are genuinely indistinguishable and a cached rationale is
-true of either. Failures are never cached, since memoising one truncated
+**6. Eleven model calls served 908 decisions.** A twenty request daily quota
+forced memoisation on the *situation* rather than the event, since at
+temperature 0 a thousand failures are only about 57 distinct situations. What
+keeps it honest is that the cache key and the prompt come from one function,
+and the prompt carries an amount band rather than an exact figure, so two
+events sharing a key really are indistinguishable and a cached rationale is
+true of either. Failures are never cached, because memoising one truncated
 response would make a blip permanent.
 
-**10. The flaky test was a real defect.** I reported it as unexplained for
-days, then ran the suite in a loop instead of running it once and hoping. It
-reproduced one run in three. `Date.now()` was being called once per *event*
-instead of once per *batch*, so a run straddling a second boundary stamped its
-events from two clocks. A fixture stamped from many clocks was never the
-reproducible thing my docs promised.
-
-**Also:** my MySQL driver compiled for weeks without a single query executing,
-a strange kind of "dual database support" to advertise. And deployment day
-taught me that an in-memory rate limiter does almost nothing on serverless
-(thirty-four requests against a limit of thirty all returned 200), and that
-Vercel Hobby caps a cron at once per day, which failed my builds before they
-produced a deployment while I stared at 404s on routes I had definitely pushed.
+**Also worth a line each:** my cooldown measured back from `Date.now()` instead
+of from the failure, so under Razorpay's delivery backoff it held perfectly
+while examining the wrong four hours. My "deterministic" demo generator called
+`Date.now()` once per event instead of once per batch, which I spent days
+calling a flaky test before running the suite in a loop and reproducing it one
+run in three. And my MySQL driver compiled for weeks without a single query
+ever executing, which is a strange kind of dual database support to advertise.
 
 ---
 
