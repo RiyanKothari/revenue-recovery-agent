@@ -139,7 +139,7 @@ Close:
 
 > "Eleven model calls served nine hundred decisions, because at temperature
 > zero a thousand failures are only a few dozen distinct situations. It runs
-> on Postgres or MySQL. Two hundred and fifty tests.
+> on Postgres or MySQL. Three hundred and eleven tests, running in CI.
 >
 > And the batch behind these numbers is synthetic — which the dashboard says
 > on screen, in amber, permanently. The measurement machinery is real. The
@@ -196,11 +196,19 @@ Eleven model calls for nine hundred decisions answers cost. For throughput,
 a CDC stream rather than polling.
 
 **"What's broken?"**
-Two things, and I'd rather say them than be caught by them. Concurrent
-webhook redeliveries once produced two payment links for one event — fixed
-with a database constraint, since no amount of application-level checking
-closes that window. And there's an intermittent test failure I've seen twice
-and cannot yet reproduce.
+Concurrent webhook redeliveries once produced two payment links for one event
+— fixed with a database constraint, since no amount of application-level
+checking closes that window.
+
+The one I like better: I had an intermittent test failure I'd seen twice and
+couldn't reproduce, and I'd been reporting it as unexplained. I finally caught
+it by running the suite in a loop. The synthetic batch generator called
+`Date.now()` once per event instead of once per batch, so a run that straddled
+a second boundary stamped its events from two different clocks. The visible
+symptom was a flaky determinism test. The actual defect was that the
+"reproducible fixture" the docs promised was stamped from as many clocks as it
+had events. It reproduced one run in three once I looked properly, and it has
+been clean for eight consecutive full runs since.
 
 **"What's next?"**
 Widen past failed payments to checkout abandonment and mandate retries — the

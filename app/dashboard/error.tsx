@@ -29,7 +29,7 @@ export default function DashboardError({
 
   return (
     <div className="rr-page">
-      <div className="rr-shell" style={{ paddingTop: 48, maxWidth: 640 }}>
+      <div id="main" role="main" className="rr-shell" style={{ paddingTop: 48, maxWidth: 640 }}>
         <div className="rr-card">
           <div className="rr-caps rr-mono" style={{ marginBottom: 12 }}>
             The dashboard could not render

@@ -98,7 +98,7 @@ Suggested five-minute structure, extending the 90-second version:
 
 ## Build Challenges & Technical Obstacles
 
-Nine that changed the system. All are documented in full in
+Ten that changed the system. All are documented in full in
 `docs/BUILD-CHALLENGES.md` (~20 entries).
 
 **1. The webhook signature check had an authentication bypass.**
@@ -201,6 +201,21 @@ trail, asserting delivery it could not evidence — with no message id stored
 to trace the claim — was the worst available category of bug. It now records
 Meta's own word, `accepted`, alongside the id.
 
+**10. A flaky test that was actually a defect in the fixture.**
+An intermittent failure I had seen twice, never reproduced, and had been
+reporting as unexplained. Running the suite in a loop caught it: the synthetic
+batch generator defaulted `now` to `Date.now()` *inside* the per-event
+timestamp function rather than taking it once per batch, so any run that
+straddled a second boundary stamped its events from two different clocks. The
+symptom was a determinism test comparing two generated batches and failing
+about one run in three. The defect was worse than the symptom — a batch
+stamped from many clocks is not the reproducible fixture the documentation
+promised, and the cooldown gaps derived from those timestamps were off by a
+second in a way nothing would have surfaced. Fixed by making the generator a
+pure function of `(size, now)`; the test now asserts byte-identity at a fixed
+instant and, separately, that a later run shifts only the timestamps. Eight
+consecutive clean full runs since.
+
 **Also worth noting:** the MySQL implementation compiled for weeks without a
 single query ever executing — a strange kind of "dual database support" to
 advertise. Both drivers now run the same 20-case contract sequence and are
@@ -216,7 +231,7 @@ does not exist.
 | Stack | Next.js 14, TypeScript, Razorpay Blade, PostgreSQL + MySQL |
 | Agent | Gemini via a provider-agnostic adapter (Anthropic supported) |
 | Execution | Razorpay MCP server (42 tools), WhatsApp Cloud API |
-| Tests | 265, including a 23-case dual-driver database contract suite |
+| Tests | 311, including a 30-case dual-driver database contract suite, in CI |
 | Conformance | 7 invariants, 5,346 checks, 0 violations |
 | Red Team | 10 hostile inputs against the live defences, all refused |
 | Real traffic | 6 genuine Razorpay events, 3 real MCP links, 1 WhatsApp delivered |

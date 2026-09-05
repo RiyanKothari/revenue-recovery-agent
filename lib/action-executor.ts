@@ -9,6 +9,7 @@ import {
   isRateLimitError,
   seedLinkBudget,
 } from "./link-budget";
+import { resolveSendWindow } from "./send-window";
 
 /**
  * Turns an agent decision into a real action. This is where "detects
@@ -57,6 +58,11 @@ export async function executeAction(
      * where they are the same moment.
      */
     eventTimeIso?: string;
+    /**
+     * Why the payment failed. Used only to choose a send *time* — the channel
+     * was already chosen by the agent, and nothing here revisits that.
+     */
+    rootCause?: string;
   },
   deps: Partial<ExecutorDeps> = {}
 ) {
@@ -117,6 +123,48 @@ export async function executeAction(
   }
 
   const channel = decision.action === "send_retry_link_whatsapp" ? "whatsapp" : "email";
+
+  /**
+   * When, as distinct from what. Resolved before anything is created or sent,
+   * because a deferred send must not burn a payment link now for a message
+   * going out in six hours — test-mode links are rationed, and a link created
+   * hours early is a link that may be stale by the time anyone taps it.
+   */
+  const window = resolveSendWindow(
+    params.rootCause ?? "unknown",
+    eventTimeIso ?? new Date().toISOString()
+  );
+
+  if (window.scheduledFor) {
+    /**
+     * Recorded as a real action even though nothing has been sent yet.
+     *
+     * That is the important part: the cooldown and the retry ceiling both
+     * count rows in this table, and a commitment to contact someone in six
+     * hours is a contact for their purposes. Leaving the row out until
+     * dispatch would let a second event slip past both guardrails in the
+     * meantime and queue a second message to the same person.
+     */
+    await recordAction(
+      {
+        agent_decision_id: agentDecisionId,
+        channel,
+        action_type: "retry_link_sent",
+        status: "scheduled",
+        attempt_number: params.attemptNumber,
+        scheduled_for: window.scheduledFor,
+      },
+      channel
+    );
+
+    await audit(revenueEventId, "action_scheduled", {
+      channel,
+      scheduled_for: window.scheduledFor,
+      reason: window.reason,
+      note: "No payment link created and nothing sent yet. The dispatcher will do both when the window opens, and re-checks quiet hours at that point.",
+    });
+    return;
+  }
 
   try {
     /**
@@ -180,6 +228,14 @@ export async function executeAction(
         razorpay_payment_link_id: link.paymentLinkId,
         status: deliveryResult.success ? (live ? "sent" : "simulated") : "failed",
         attempt_number: params.attemptNumber,
+        /**
+         * Stored so Meta's later delivery callback has something to join on.
+         * Without it, `accepted` is where this record's knowledge permanently
+         * ends and a claim in the trail cannot be traced to a message Meta
+         * can be asked about.
+         */
+        provider_message_id: deliveryResult.messageId ?? null,
+        delivery_state: deliveryResult.status ?? null,
       },
       channel
     );

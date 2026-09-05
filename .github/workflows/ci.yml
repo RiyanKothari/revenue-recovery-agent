@@ -1,0 +1,52 @@
+# Runs the test suite on every push and pull request.
+#
+# The suite was already 265 tests before this file existed, and every one of
+# them ran only when somebody typed `npm test`. That is the same failure mode
+# the conformance verifier exists to catch elsewhere in this project: a check
+# nobody can see run is indistinguishable from one that isn't running.
+#
+# No database is provisioned here on purpose. The unit suite is hermetic —
+# every module that touches the database takes it as an injected dependency,
+# which is why that was worth doing — and the dual-driver contract suite skips
+# itself without DATABASE_URL rather than failing. A green tick here means the
+# logic holds; it does not claim the drivers were exercised, and the contract
+# suite says so when it skips.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # `npm ci` rather than `npm install`: the lockfile is the contract, and
+      # a CI run that silently resolves a different tree is testing something
+      # other than what deploys.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      # The build is a test. Next.js only type-checks route handlers and page
+      # props at build time, so a signature that compiles in isolation can
+      # still fail to deploy.
+      - name: Build
+        run: npm run build
+        env:
+          # Present but deliberately not real. The build must not require
+          # credentials — anything that reaches for a live service at build
+          # time is a module doing work at import, which is its own bug.
+          NEXT_TELEMETRY_DISABLED: "1"

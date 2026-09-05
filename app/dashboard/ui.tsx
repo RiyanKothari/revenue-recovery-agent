@@ -116,10 +116,16 @@ export function Header({ status }: { status?: FeedStatus }) {
 
   return (
     <header className="rr-header">
+      {/* First thing in the tab order on every page, so a keyboard user is
+          never made to walk the nav to reach the content. */}
+      <a className="rr-skip" href="#main">
+        Skip to main content
+      </a>
+
       <span className="rr-brand">Revenue Recovery — Live</span>
       <span className="rr-pill rr-pill--test rr-mono">Test mode</span>
 
-      <nav className="rr-nav">
+      <nav className="rr-nav" aria-label="Dashboard sections">
         {NAV.map((item) => (
           <Link
             key={item.href}

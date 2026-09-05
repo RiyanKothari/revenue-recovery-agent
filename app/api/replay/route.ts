@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { apiError, rateLimited } from "@/lib/api-errors";
-import { pruneRateLimits, rateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/rate-limit";
 import { DEFAULT_POLICY, type RecoveryPolicy } from "@/lib/policy";
 import {
   comparePolicies,
@@ -14,6 +14,15 @@ import { estimateRecoveryProbability } from "@/lib/propensity";
 import { getObservedStats } from "@/lib/propensity-store";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * How many events one replay will read into memory.
+ *
+ * Sized so the whole working set stays well inside a serverless function's
+ * limit with room for the joins built on top of it. Raising it is a decision
+ * about memory, not about correctness — the engine is indifferent.
+ */
+const MAX_REPLAY_EVENTS = 20_000;
 
 /**
  * The Policy Lab. Re-runs recorded history under a different policy and
@@ -68,8 +77,16 @@ export async function POST(request: Request) {
    * do that repeatedly at the database's expense. Twenty a minute is far
    * more than the Policy Lab's slider needs and far less than a loop wants.
    */
-  pruneRateLimits();
-  const limit = rateLimit("replay", 20, 60_000);
+  let db;
+  try {
+    db = getDb();
+  } catch (err) {
+    return apiError("database_unavailable", 503, err);
+  }
+
+  // Counted in the database, not in module memory — see lib/rate-limit.ts for
+  // why the per-process version was measured to do almost nothing here.
+  const limit = await enforceRateLimit("replay", 20, 60_000, db);
   if (!limit.allowed) return rateLimited(limit.retryAfterSeconds);
 
   let body: ReplayRequest = {};
@@ -82,10 +99,21 @@ export async function POST(request: Request) {
   }
 
   try {
-    const db = getDb();
+    /**
+     * Bounded, and the bound is reported.
+     *
+     * This loads whole tables into one lambda's memory. That is correct at
+     * this project's volume and wrong at six figures, where it would be an
+     * out-of-memory kill rather than a slow response. A counterfactual is an
+     * estimate, so truncating it is legitimate in a way that truncating the
+     * conformance verifier is not — but only if the reader is told, which is
+     * what `scope` in the response is for.
+     */
+    const totalEvents = await db.countEvents();
+    const truncated = totalEvents > MAX_REPLAY_EVENTS;
 
     const [events, consent, decisions, actions, assignments, outcomes] = await Promise.all([
-      db.listEvents(),
+      db.listEvents(truncated ? MAX_REPLAY_EVENTS : undefined),
       db.listConsent(),
       db.listDecisions(),
       db.listRecoveryActions(),
@@ -241,6 +269,14 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       events_replayed: replayEvents.length,
+      scope: {
+        events_total: totalEvents,
+        events_examined: replayEvents.length,
+        truncated,
+        note: truncated
+          ? `Replayed the ${MAX_REPLAY_EVENTS} most recent events of ${totalEvents}. A counterfactual over a suffix of history is still a counterfactual, but it is not the whole batch and the comparison below should be read as covering that window.`
+          : "The whole recorded batch.",
+      },
       candidate_policy: {
         holdoutPercent: candidate.holdoutPercent,
         minExpectedValuePaise: candidate.minExpectedValuePaise,

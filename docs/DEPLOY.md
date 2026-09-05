@@ -70,6 +70,10 @@ DATABASE_URL="<pooled-connection-string>" npm run preflight database
 | `RAZORPAY_MCP_MERCHANT_TOKEN` | from `.env.local` |
 | `RAZORPAY_MCP_LINK_BUDGET` | `0` until you have a fresh test key |
 | `WHATSAPP_DRY_RUN` | `true` |
+| `WHATSAPP_APP_SECRET` | Meta app secret — unset refuses every delivery callback |
+| `WHATSAPP_VERIFY_TOKEN` | any string; Meta echoes it once at registration |
+| `CRON_SECRET` | bearer token for `/api/cron/dispatch`; unset refuses to dispatch |
+| `SCHEDULED_SENDS` | `true` (set `false` to send everything immediately) |
 
 **Do not set `ANTHROPIC_API_KEY`.** It is unused (`DECISION_PROVIDER` selects
 Gemini) and putting an unfunded key in the environment adds a way to be
@@ -152,3 +156,23 @@ docker compose up -d && npm run db:migrate && npm run seed:batch 1200 && npm run
 
 Worth having ready. Conference wifi is the most likely thing to break on the
 day, and it is the one failure that makes everything else irrelevant.
+
+## After deploying: two things that need registering
+
+**Run the migration.** Four columns and one table were added after the first
+deploy — the shared rate-limit counter, and the delivery/scheduling columns on
+`recovery_actions`. `npm run db:migrate` is idempotent and safe to re-run;
+`npm run preflight database` fails loudly if it has not been run, because a
+missing `rate_limit_windows` means the limiter has quietly gone back to being
+per-instance.
+
+**Point Meta at the delivery callback.** In the Meta app dashboard, under
+WhatsApp → Configuration → Webhook, set the callback URL to
+`https://<your-deployment>/api/webhooks/whatsapp` and the verify token to
+whatever you put in `WHATSAPP_VERIFY_TOKEN`, then subscribe to the `messages`
+field. Until that is done every send stops at `accepted` — which is honest,
+and is exactly what the dashboard will show, but it is not delivery.
+
+**Vercel Cron is already configured** in `vercel.json` to call
+`/api/cron/dispatch` every five minutes. It runs only on production
+deployments, and it refuses without `CRON_SECRET`.

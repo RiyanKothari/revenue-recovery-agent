@@ -77,7 +77,7 @@ export default function RedTeamPage() {
     <div className="rr-page">
       <Header />
 
-      <div className="rr-shell" style={{ paddingTop: 24, maxWidth: 1040 }}>
+      <div id="main" role="main" className="rr-shell" style={{ paddingTop: 24, maxWidth: 1040 }}>
         <div className="rr-card" style={{ marginBottom: 16 }}>
           <SectionTitle
             right={

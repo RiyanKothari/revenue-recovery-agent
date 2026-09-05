@@ -3,6 +3,9 @@ import type {
   AssignmentInsert,
   AuditRow,
   DecisionInsert,
+  DeliveryStatusUpdate,
+  DispatchResult,
+  DueAction,
   DecisionRow,
   InsertResult,
   OutcomeInsert,
@@ -36,6 +39,10 @@ const TABLES = [
   "audit_log",
   "experiment_assignments",
   "decision_cache",
+  // Not written by the pipeline, but preflight should fail loudly on a
+  // database that predates it: a missing table here means the shared rate
+  // limiter silently degrades to a per-instance counter.
+  "rate_limit_windows",
 ];
 
 /** Postgres returns timestamptz as a Date; the pipeline speaks ISO strings. */
@@ -319,8 +326,10 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       await query(
         `insert into recovery_actions
            (agent_decision_id, channel, action_type, status, attempt_number,
-            razorpay_payment_link_id, executed_at)
-         values ($1,$2,$3,$4,$5,$6, coalesce($7::timestamptz, now()))`,
+            razorpay_payment_link_id, executed_at, provider_message_id,
+            delivery_state, scheduled_for)
+         values ($1,$2,$3,$4,$5,$6, coalesce($7::timestamptz, now()), $8, $9,
+                 $10::timestamptz)`,
         [
           row.agent_decision_id,
           row.channel,
@@ -329,8 +338,138 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           row.attempt_number,
           row.razorpay_payment_link_id ?? null,
           row.executed_at ?? null,
+          row.provider_message_id ?? null,
+          row.delivery_state ?? null,
+          row.scheduled_for ?? null,
         ]
       );
+    },
+
+    async recordDeliveryStatus(update: DeliveryStatusUpdate) {
+      /**
+       * The provider's later word replaces ours, but only downward.
+       *
+       * A `failed` callback demotes a row we recorded as sent, because Meta
+       * knows things about the recipient that we do not. A `delivered`
+       * callback does not promote a row we recorded as failed: our own send
+       * error is first-hand, and a status can arrive for a message that never
+       * left. The audit trail keeps the full history either way — this column
+       * is the current best answer, not the record of how we got to it.
+       */
+      const rows = await query<any>(
+        `update recovery_actions ra
+            set delivery_state = $2,
+                delivery_state_at = $3::timestamptz,
+                delivery_error = $4,
+                status = case
+                  when $2 in ('failed', 'undelivered') then 'failed'
+                  else ra.status
+                end
+           from agent_decisions ad
+          where ad.id = ra.agent_decision_id
+            and ra.provider_message_id = $1
+        returning ad.revenue_event_id`,
+        [update.provider_message_id, update.state, update.at, update.error ?? null]
+      );
+      return rows[0]?.revenue_event_id ?? null;
+    },
+
+    async listDueActions(nowIso: string, limit: number): Promise<DueAction[]> {
+      const rows = await query<any>(
+        `select ra.id, ad.revenue_event_id, ra.agent_decision_id, ra.channel,
+                ra.attempt_number, ra.scheduled_for,
+                re.amount_paise, re.currency, re.customer_contact
+           from recovery_actions ra
+           join agent_decisions ad on ad.id = ra.agent_decision_id
+           join revenue_events re on re.id = ad.revenue_event_id
+          where ra.scheduled_for is not null
+            and ra.dispatched_at is null
+            and ra.scheduled_for <= $1::timestamptz
+          order by ra.scheduled_for asc
+          limit $2`,
+        [nowIso, limit]
+      );
+      return rows.map((r) => ({
+        id: r.id,
+        revenue_event_id: r.revenue_event_id,
+        agent_decision_id: r.agent_decision_id,
+        channel: r.channel,
+        attempt_number: Number(r.attempt_number),
+        scheduled_for: iso(r.scheduled_for),
+        amount_paise: Number(r.amount_paise),
+        currency: r.currency,
+        customer_contact: r.customer_contact ?? null,
+      }));
+    },
+
+    async claimDueAction(actionId: string, nowIso: string) {
+      // `dispatched_at is null` in the WHERE clause is the lock. Two
+      // overlapping cron ticks both see the row as due; exactly one update
+      // matches, and the loser gets zero rows back and skips it. The same
+      // shape as the unique constraint on decisions, for the same reason:
+      // the application cannot close that window by checking harder.
+      const rows = await query<any>(
+        `update recovery_actions
+            set dispatched_at = $2::timestamptz
+          where id = $1 and dispatched_at is null
+        returning id`,
+        [actionId, nowIso]
+      );
+      return rows.length > 0;
+    },
+
+    async completeDueAction(update: DispatchResult) {
+      await query(
+        `update recovery_actions
+            set status = $2,
+                razorpay_payment_link_id =
+                  coalesce($3, razorpay_payment_link_id),
+                provider_message_id = coalesce($4, provider_message_id),
+                delivery_state = coalesce($5, delivery_state),
+                executed_at = $6::timestamptz
+          where id = $1`,
+        [
+          update.action_id,
+          update.status,
+          update.razorpay_payment_link_id ?? null,
+          update.provider_message_id ?? null,
+          update.delivery_state ?? null,
+          update.executed_at,
+        ]
+      );
+    },
+
+    async hitRateLimit(bucket: string, windowMs: number, nowIso: string) {
+      /**
+       * One statement, so the read-modify-write cannot interleave. That is
+       * the whole reason this lives in the database rather than in a Map:
+       * a per-process counter is per-lambda, and a platform that spreads a
+       * burst across instances never lets any single one reach its limit.
+       *
+       * The window is fixed rather than sliding. The first request of a
+       * window sets `reset_at`, and later ones increment until that moment
+       * passes. A sliding window is more precise and needs a row per request;
+       * this needs one row per bucket forever, which is the right trade for
+       * shedding load from a public endpoint.
+       */
+      const resetAt = new Date(new Date(nowIso).getTime() + windowMs).toISOString();
+      const rows = await query<any>(
+        `insert into rate_limit_windows (bucket, count, reset_at)
+         values ($1, 1, $2::timestamptz)
+         on conflict (bucket) do update
+            set count = case
+                  when rate_limit_windows.reset_at <= $3::timestamptz then 1
+                  else rate_limit_windows.count + 1
+                end,
+                reset_at = case
+                  when rate_limit_windows.reset_at <= $3::timestamptz
+                  then excluded.reset_at
+                  else rate_limit_windows.reset_at
+                end
+         returning count, reset_at`,
+        [bucket, resetAt, nowIso]
+      );
+      return { count: Number(rows[0].count), resetAt: iso(rows[0].reset_at) };
     },
 
     async countLiveLinks() {
@@ -430,11 +569,21 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
 
     // --- dashboard reads
 
-    async listEvents(): Promise<RevenueEventRow[]> {
+    async countEvents() {
+      const rows = await query<any>(`select count(*) as n from revenue_events`);
+      return Number(rows[0]?.n ?? 0);
+    },
+
+    async listEvents(limit?: number): Promise<RevenueEventRow[]> {
+      // Most recent first only when bounded. Unbounded callers index the
+      // result themselves, and an ORDER BY they do not need is a sort of the
+      // whole table on every dashboard poll.
       const rows = await query<any>(
         `select id, customer_id, amount_paise, root_cause, razorpay_order_id,
                 received_at, processed_at
-           from revenue_events`
+           from revenue_events
+          ${limit ? "order by received_at desc limit $1" : ""}`,
+        limit ? [limit] : []
       );
       return rows.map((r) => ({
         id: r.id,

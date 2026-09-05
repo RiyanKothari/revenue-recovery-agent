@@ -158,7 +158,29 @@ export function syntheticCreatedAt(i: number, size: number, now = Date.now()): n
   return Math.floor((firstFailureAt(customerIndex) + gapHours * 3_600_000) / 1000);
 }
 
-export function generateBatch(size = 55) {
+/**
+ * One clock for the whole batch, captured once.
+ *
+ * This was the intermittent test failure that survived a dozen clean runs
+ * before anyone caught it in the act. `syntheticCreatedAt` defaulted its own
+ * `now` to `Date.now()`, and `generateBatch` called it once per event — so
+ * the batch was stamped against as many clocks as it had events, and any run
+ * that straddled a second boundary produced timestamps that disagreed with
+ * each other by one second.
+ *
+ * The visible symptom was a determinism test comparing two generated batches
+ * and failing roughly one run in three. The real defect was worse than the
+ * symptom: a batch whose events are stamped from different instants is not
+ * the "reproducible fixture" the docs claim, and the cooldown gaps computed
+ * from those timestamps were off by a second in a way nothing would have
+ * surfaced.
+ *
+ * Taking `now` as an argument also makes the whole generator a pure function
+ * of `(size, now)`, which is what lets the determinism test assert
+ * byte-identity honestly rather than hoping the two calls land inside the
+ * same second.
+ */
+export function generateBatch(size = 55, now = Date.now()) {
   return Array.from({ length: size }, (_, i) => {
     // Seeded on the index, so event i is the same event on every run.
     const rand = seeded(hashSeed(`synthetic|${size}|${i}`));
@@ -190,7 +212,7 @@ export function generateBatch(size = 55) {
               // Razorpay sends this on every payment entity. The pipeline
               // keys its time-based rules off it rather than off delivery
               // time — see lib/event-time.ts.
-              created_at: syntheticCreatedAt(i, size),
+              created_at: syntheticCreatedAt(i, size, now),
             },
           },
         },

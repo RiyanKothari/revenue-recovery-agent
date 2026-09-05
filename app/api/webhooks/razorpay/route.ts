@@ -447,6 +447,9 @@ async function processEvent({
     // Keeps the send on the same timeline as the failure — see the cooldown
     // note in lib/guardrails.ts.
     eventTimeIso,
+    // Chooses the send *time* only. The channel was decided above and is not
+    // revisited — see lib/send-window.ts.
+    rootCause: classification.root_cause,
   });
 
   return NextResponse.json({ status: "processed", action: decision.action });

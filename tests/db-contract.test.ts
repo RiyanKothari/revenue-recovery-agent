@@ -110,6 +110,7 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
     `delete from revenue_events where razorpay_event_id ${MATCH}`,
     `delete from customer_consent where customer_id ${MATCH}`,
     `delete from decision_cache where cache_key ${MATCH}`,
+    `delete from rate_limit_windows where bucket ${MATCH}`,
   ];
 
   if (driver === "postgres") {
@@ -153,6 +154,7 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
     }
     await conn.query(`delete from customer_consent where customer_id ${MATCH}`);
     await conn.query(`delete from decision_cache where cache_key ${MATCH}`);
+    await conn.query(`delete from rate_limit_windows where bucket ${MATCH}`);
   } finally {
     await conn.end();
   }
@@ -664,4 +666,243 @@ forEachDriver("retry history says whether the earlier attempt converted", async 
   const after = await db.getCustomerRetryHistory(customer, 10);
   assert.equal(after[0].converted, true, `${driver}: the recovery is now visible`);
   assert.equal(typeof after[0].converted, "boolean", `${driver}: a real boolean, not 0/1`);
+});
+
+forEachDriver("the rate-limit counter increments atomically and shares one window", async (db, driver) => {
+  /**
+   * The property the in-memory limiter could not have: two callers that do
+   * not share a process still share a count. Asserted against real SQL,
+   * because "one statement, therefore atomic" is a claim about the engine
+   * rather than about TypeScript — and the two engines reach it by completely
+   * different routes (`on conflict do update ... returning` versus
+   * `on duplicate key update` followed by a read).
+   */
+  const bucket = `ctr_rl_${driver}_${Date.now().toString(36)}`;
+  const now = new Date().toISOString();
+
+  const first = await db.hitRateLimit(bucket, 60_000, now);
+  assert.equal(first.count, 1, `${driver}: a fresh bucket starts at one`);
+
+  const second = await db.hitRateLimit(bucket, 60_000, now);
+  assert.equal(second.count, 2, `${driver}: the second caller sees the first`);
+  assert.equal(second.resetAt, first.resetAt, `${driver}: the window does not slide`);
+
+  // Concurrent, not sequential. The sequential version passes even against a
+  // read-then-write implementation, which is exactly the bug being excluded.
+  const concurrent = await Promise.all(
+    Array.from({ length: 10 }, () => db.hitRateLimit(bucket, 60_000, now))
+  );
+  const counts = concurrent.map((r) => r.count).sort((a, b) => a - b);
+  assert.deepEqual(
+    counts,
+    [3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    `${driver}: every concurrent caller got a distinct count — no increment was lost`
+  );
+});
+
+forEachDriver("an expired rate-limit window starts over", async (db, driver) => {
+  const bucket = `ctr_rlx_${driver}_${Date.now().toString(36)}`;
+  const t0 = "2026-01-01T00:00:00.000Z";
+
+  await db.hitRateLimit(bucket, 60_000, t0);
+
+  const inside = await db.hitRateLimit(bucket, 60_000, "2026-01-01T00:00:30.000Z");
+  assert.equal(inside.count, 2, `${driver}: still inside the same window`);
+
+  const after = await db.hitRateLimit(bucket, 60_000, "2026-01-01T00:01:01.000Z");
+  assert.equal(after.count, 1, `${driver}: a new window, counted from one`);
+});
+
+forEachDriver("a delivery callback finds the message it belongs to", async (db, driver) => {
+  /**
+   * Meta answers 200 for any recipient and silently drops messages to
+   * unverified numbers, so `accepted` at send time is the strongest claim
+   * available. The message id is the only handle connecting our row to Meta's
+   * later word about it.
+   */
+  const id = await newEvent(db, `deliv_${driver}`);
+  const messageId = `${RUN}_wamid_${driver}`;
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "gateway_error",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "sent",
+    attempt_number: 1,
+    provider_message_id: messageId,
+    delivery_state: "accepted",
+  });
+
+  const matched = await db.recordDeliveryStatus({
+    provider_message_id: messageId,
+    state: "delivered",
+    at: new Date().toISOString(),
+  });
+
+  assert.equal(matched, id, `${driver}: the status is filed against the right event`);
+
+  // A status for a message this deployment never sent is normal traffic —
+  // Meta re-sends, and a callback can arrive for another instance's message.
+  const unmatched = await db.recordDeliveryStatus({
+    provider_message_id: `${RUN}_never_sent_${driver}`,
+    state: "delivered",
+    at: new Date().toISOString(),
+  });
+  assert.equal(unmatched, null, `${driver}: an unmatched callback is not an error`);
+});
+
+forEachDriver("a failed delivery callback demotes the recorded status", async (db, driver) => {
+  const id = await newEvent(db, `delivf_${driver}`);
+  const messageId = `${RUN}_wamidf_${driver}`;
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "gateway_error",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "sent",
+    attempt_number: 1,
+    provider_message_id: messageId,
+    delivery_state: "accepted",
+  });
+
+  await db.recordDeliveryStatus({
+    provider_message_id: messageId,
+    state: "failed",
+    at: new Date().toISOString(),
+    error: "meta_131026: Message undeliverable",
+  });
+
+  // The retry history reads `status`, so a message Meta could not deliver
+  // must stop counting as a successful contact.
+  const history = await db.getCustomerRetryHistory(eventRow(`delivf_${driver}`).customer_id!, 10);
+  assert.equal(history[0].status, "failed", `${driver}: demoted from sent`);
+});
+
+forEachDriver("a scheduled send is claimed exactly once", async (db, driver) => {
+  /**
+   * Two overlapping cron ticks both read the row as due. Exactly one update
+   * may match — the same shape as the unique constraint on decisions, and for
+   * the same reason: no amount of application-level checking closes that
+   * window.
+   */
+  const id = await newEvent(db, `sched_${driver}`);
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "scheduled",
+    attempt_number: 1,
+    scheduled_for: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const dueNow = await db.listDueActions(new Date().toISOString(), 200);
+  const mine = dueNow.filter((a) => a.revenue_event_id === id);
+  assert.equal(mine.length, 1, `${driver}: the row is due`);
+  assert.equal(mine[0].amount_paise, 123400, `${driver}: the event context came along`);
+  assert.equal(mine[0].customer_contact, "+919000000001", `${driver}: and the recipient`);
+
+  const claims = await Promise.all([
+    db.claimDueAction(mine[0].id, new Date().toISOString()),
+    db.claimDueAction(mine[0].id, new Date().toISOString()),
+    db.claimDueAction(mine[0].id, new Date().toISOString()),
+  ]);
+  assert.equal(claims.filter(Boolean).length, 1, `${driver}: exactly one caller wins`);
+
+  const stillDue = await db.listDueActions(new Date().toISOString(), 200);
+  assert.equal(
+    stillDue.filter((a) => a.revenue_event_id === id).length,
+    0,
+    `${driver}: a claimed row leaves the queue`
+  );
+
+  await db.completeDueAction({
+    action_id: mine[0].id,
+    status: "sent",
+    razorpay_payment_link_id: `${RUN}_plink_${driver}`,
+    provider_message_id: `${RUN}_wamids_${driver}`,
+    delivery_state: "accepted",
+    executed_at: new Date().toISOString(),
+  });
+
+  const history = await db.getCustomerRetryHistory(eventRow(`sched_${driver}`).customer_id!, 10);
+  assert.equal(history[0].status, "sent", `${driver}: the dispatch result is recorded`);
+});
+
+forEachDriver("a send scheduled for the future is not yet due", async (db, driver) => {
+  const id = await newEvent(db, `future_${driver}`);
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "scheduled",
+    attempt_number: 1,
+    scheduled_for: new Date(Date.now() + 6 * 60 * 60_000).toISOString(),
+  });
+
+  const due = await db.listDueActions(new Date().toISOString(), 200);
+  assert.equal(
+    due.filter((a) => a.revenue_event_id === id).length,
+    0,
+    `${driver}: not due for six hours`
+  );
+
+  /**
+   * It is still a recorded action, which is what makes the cooldown and the
+   * retry ceiling see it. A commitment to contact someone this evening is a
+   * contact for their purposes — leaving the row out until dispatch would let
+   * a second event slip past both guardrails in the meantime.
+   */
+  assert.equal(
+    await db.countActionsForEvent(id),
+    1,
+    `${driver}: the guardrails can count a scheduled send`
+  );
+});
+
+forEachDriver("events can be counted without being loaded", async (db, driver) => {
+  // The conformance verifier refuses rather than checking a slice, and the
+  // replay engine truncates and says so. Both need the total first.
+  const total = await db.countEvents();
+  assert.equal(typeof total, "number", driver);
+  assert.ok(total >= 1, `${driver}: this run wrote events`);
+
+  const bounded = await db.listEvents(3);
+  assert.ok(bounded.length <= 3, `${driver}: the bound is honoured`);
+
+  const unbounded = await db.listEvents();
+  assert.equal(unbounded.length, total, `${driver}: the count matches the full read`);
 });

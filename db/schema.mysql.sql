@@ -156,3 +156,34 @@ create unique index uq_agent_decisions_event on agent_decisions(revenue_event_id
 
 alter table agent_decisions add column from_cache tinyint(1) not null default 0;
 alter table agent_decisions add column cache_key varchar(191);
+
+-- A rate-limit counter that survives the process. See the note in
+-- schema.postgres.sql: the previous limiter lived in module memory, which is
+-- correct on a long-lived server and worth almost nothing on a platform that
+-- gives each concurrent invocation its own module scope.
+create table if not exists rate_limit_windows (
+  bucket varchar(191) primary key,
+  count int not null,
+  reset_at datetime(3) not null
+) engine=InnoDB;
+
+-- What Meta later said about a message we sent. The send call returns
+-- `accepted` and a message id, which is weaker than delivered — the id is the
+-- only handle the delivery webhook has to join on.
+alter table recovery_actions add column provider_message_id varchar(191);
+alter table recovery_actions add column delivery_state varchar(32);
+alter table recovery_actions add column delivery_state_at datetime(3);
+alter table recovery_actions add column delivery_error text;
+
+create index idx_recovery_actions_provider_message
+  on recovery_actions(provider_message_id);
+
+-- When a send should happen, as distinct from when it was decided. Null means
+-- "now", which is what every action written before this column meant.
+alter table recovery_actions add column scheduled_for datetime(3);
+alter table recovery_actions add column dispatched_at datetime(3);
+
+-- MySQL has no partial indexes, so this covers the same lookup with both
+-- columns instead of a predicate.
+create index idx_recovery_actions_due
+  on recovery_actions(scheduled_for, dispatched_at);

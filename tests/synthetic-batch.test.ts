@@ -125,9 +125,54 @@ test("amounts are positive and in paise", () => {
  * the effect as not established, on the strength of a different draw alone.
  */
 test("the same batch size produces byte-identical events on every run", () => {
-  const a = generateBatch(120);
-  const b = generateBatch(120);
-  assert.deepEqual(a, b);
+  /**
+   * Pinned to one instant, which is the property that actually holds and the
+   * one worth asserting.
+   *
+   * This test used to call `generateBatch(120)` twice and compare the
+   * results, and it failed about one run in three — the generator stamped
+   * each event from its own `Date.now()` call, so any run that straddled a
+   * second boundary produced two batches differing by one second in
+   * `created_at`. It looked like flakiness in the test and was a real defect
+   * in the generator: a batch stamped from many clocks is not a reproducible
+   * fixture, whatever the docs say about it.
+   */
+  const now = Date.parse("2026-09-05T12:00:00.000Z");
+  assert.deepEqual(generateBatch(120, now), generateBatch(120, now));
+});
+
+test("a batch is stamped from ONE clock, not one per event", () => {
+  // The defect above, asserted directly rather than through its symptom.
+  const now = Date.parse("2026-09-05T12:00:00.000Z");
+  const events = generateBatch(40, now);
+
+  // The oldest first-time failure sits exactly at the far edge of the window.
+  const stamps = events.map((e) => e.body.payload.payment.entity.created_at);
+  const oldest = Math.min(...stamps);
+  const expectedOldest = Math.floor((now - 7 * 86_400_000) / 1000);
+
+  assert.equal(
+    oldest,
+    expectedOldest,
+    "the window is measured from the supplied instant, to the second"
+  );
+});
+
+test("a later run shifts the window and changes nothing else", () => {
+  /**
+   * Timestamps are relative to when the batch is generated, on purpose — the
+   * fixture is meant to look like the last seven days whenever it is seeded.
+   * Everything that is NOT a timestamp has to be identical regardless, which
+   * is what makes the measured numbers reproducible.
+   */
+  const t0 = Date.parse("2026-09-05T12:00:00.000Z");
+  const strip = (now: number) =>
+    generateBatch(80, now).map((e) => {
+      const { created_at, ...rest } = e.body.payload.payment.entity;
+      return { eventId: e.eventId, entity: rest };
+    });
+
+  assert.deepEqual(strip(t0), strip(t0 + 3 * 86_400_000));
 });
 
 test("failure reasons and amounts are stable, not just the customer pool", () => {

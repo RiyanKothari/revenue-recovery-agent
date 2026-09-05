@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runConformance } from "@/lib/conformance-store";
+import { ConformanceTooLargeError, runConformance } from "@/lib/conformance-store";
 import { apiError } from "@/lib/api-errors";
 
 // Recomputed per request from live tables — a cached conformance result is
@@ -18,6 +18,15 @@ export async function GET() {
     const bundle = await runConformance();
     return NextResponse.json(bundle);
   } catch (err) {
+    /**
+     * Distinguished from a failure, because it is not one. The verifier
+     * declining to attest to more rows than it can examine is the safety
+     * property working; reporting it as a 500 would file a deliberate refusal
+     * alongside a broken query.
+     */
+    if (err instanceof ConformanceTooLargeError) {
+      return apiError("conformance_scope_exceeded", 413, err);
+    }
     return apiError("conformance_failed", 500, err);
   }
 }

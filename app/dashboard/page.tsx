@@ -168,7 +168,7 @@ export default function DashboardPage() {
     <div className="rr-page">
       <Header status={status} />
 
-      <div className="rr-shell">
+      <div id="main" role="main" className="rr-shell">
         <MoneyRiver
           buckets={summary?.outcome_buckets ?? []}
           totalAtRiskPaise={summary?.total_at_risk_paise ?? 0}

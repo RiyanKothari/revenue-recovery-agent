@@ -6,7 +6,16 @@ export type AuditStage =
   | "agent_decided"
   | "action_executed"
   | "stopping_rule_triggered"
-  | "outcome_recorded";
+  | "outcome_recorded"
+  // A send that was decided but deliberately deferred — see lib/send-window.ts.
+  // Distinct from action_executed because nothing has been sent yet, and a
+  // trace that showed the two identically would claim a message reached
+  // someone hours before it did.
+  | "action_scheduled"
+  // What the provider said about a message AFTER we sent it. Appended rather
+  // than overwriting the send row, so a message that went accepted, then sent,
+  // then failed leaves all three in the trail.
+  | "delivery_status_updated";
 
 /**
  * Every stage of the pipeline calls this. It's deliberately dumb — an

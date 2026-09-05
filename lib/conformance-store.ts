@@ -23,11 +23,45 @@ import { estimateRecoveryProbability, tallyByRootCause } from "./propensity";
 export interface ConformanceBundle {
   conformance: ConformanceReport;
   complianceCost: ComplianceCostReport;
+  /** How much of the record this attestation actually covers. */
+  scope: { events_examined: number; max_events: number };
+}
+
+/**
+ * The most events one verification will hold in memory.
+ *
+ * Every other bounded read in this codebase truncates and says so. This one
+ * refuses instead, and the asymmetry is the point: a counterfactual over a
+ * suffix of history is still a useful estimate, whereas a safety attestation
+ * over a suffix of history is a clean bill of health for rows nobody looked
+ * at. The same reasoning as the note below about PostgREST silently capping a
+ * select at 1000 rows — except that failure was invisible, and this one names
+ * itself.
+ *
+ * Raising it is a decision about memory. At the volume where it genuinely
+ * binds, verification belongs in a job that streams the audit log rather than
+ * in a request handler, and the refusal is what makes that moment visible.
+ */
+export const MAX_CONFORMANCE_EVENTS = 50_000;
+
+export class ConformanceTooLargeError extends Error {
+  constructor(readonly total: number) {
+    super(
+      `Refusing to verify: ${total} events exceeds the ${MAX_CONFORMANCE_EVENTS} this verifier can hold in memory. ` +
+        "Verifying a subset and reporting a pass would attest to rows that were never checked."
+    );
+    this.name = "ConformanceTooLargeError";
+  }
 }
 
 export async function runConformance(
   db: RecoveryDb = getDb()
 ): Promise<ConformanceBundle> {
+  const totalEvents = await db.countEvents();
+  if (totalEvents > MAX_CONFORMANCE_EVENTS) {
+    throw new ConformanceTooLargeError(totalEvents);
+  }
+
   const [events, decisions, actions, consent, assignments, stops, outcomes] =
     await Promise.all([
       db.listEvents(),
@@ -85,5 +119,9 @@ export async function runConformance(
     DEFAULT_POLICY
   );
 
-  return { conformance: verifyConformance(input), complianceCost };
+  return {
+    conformance: verifyConformance(input),
+    complianceCost,
+    scope: { events_examined: events.length, max_events: MAX_CONFORMANCE_EVENTS },
+  };
 }

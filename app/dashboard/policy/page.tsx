@@ -96,7 +96,7 @@ export default function PolicyPage() {
     <div className="rr-page">
       <Header />
 
-      <div className="rr-shell" style={{ paddingTop: 24 }}>
+      <div id="main" role="main" className="rr-shell" style={{ paddingTop: 24 }}>
         <div className="rr-columns" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,2fr)" }}>
           {/* --- Controls --- */}
           <div className="rr-card">

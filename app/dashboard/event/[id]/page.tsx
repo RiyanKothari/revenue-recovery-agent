@@ -71,7 +71,7 @@ export default function EventTracePage({ params }: { params: { id: string } }) {
     <div className="rr-page">
       <Header />
 
-      <div className="rr-shell" style={{ paddingTop: 20 }}>
+      <div id="main" role="main" className="rr-shell" style={{ paddingTop: 20 }}>
         <Link href="/dashboard" className="rr-chip rr-chip--neutral" style={{ textDecoration: "none" }}>
           ← Back to the ledger
         </Link>

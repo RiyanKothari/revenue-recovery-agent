@@ -4,6 +4,9 @@ import type {
   AssignmentInsert,
   AuditRow,
   DecisionInsert,
+  DeliveryStatusUpdate,
+  DispatchResult,
+  DueAction,
   DecisionRow,
   InsertResult,
   OutcomeInsert,
@@ -47,6 +50,10 @@ const TABLES = [
   "audit_log",
   "experiment_assignments",
   "decision_cache",
+  // Not written by the pipeline, but preflight should fail loudly on a
+  // database that predates it: a missing table here means the shared rate
+  // limiter silently degrades to a per-instance counter.
+  "rate_limit_windows",
 ];
 
 /** MySQL DATETIME comes back as a Date; the pipeline speaks ISO strings. */
@@ -95,6 +102,19 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
   const exec = async (sql: string, params: any[] = []): Promise<void> => {
     await pool.execute(sql, params);
+  };
+
+  /**
+   * How many rows an UPDATE actually touched.
+   *
+   * MySQL has no RETURNING, so a conditional update — the shape used for
+   * claiming a scheduled send exactly once — can only be checked by asking
+   * the result header. Postgres answers the same question with
+   * `returning id`; both callers get a boolean and never learn which.
+   */
+  const affected = async (sql: string, params: any[] = []): Promise<number> => {
+    const [result] = await pool.execute(sql, params);
+    return Number((result as any)?.affectedRows ?? 0);
   };
 
   const insertOrDuplicate = async (
@@ -339,8 +359,9 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       await exec(
         `insert into recovery_actions
            (id, agent_decision_id, channel, action_type, status, attempt_number,
-            razorpay_payment_link_id, executed_at)
-         values (?,?,?,?,?,?,?, coalesce(?, current_timestamp(3)))`,
+            razorpay_payment_link_id, executed_at, provider_message_id,
+            delivery_state, scheduled_for)
+         values (?,?,?,?,?,?,?, coalesce(?, current_timestamp(3)), ?, ?, ?)`,
         [
           randomUUID(),
           row.agent_decision_id,
@@ -350,8 +371,161 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           row.attempt_number,
           row.razorpay_payment_link_id ?? null,
           row.executed_at ? toMysqlDatetime(row.executed_at) : null,
+          row.provider_message_id ?? null,
+          row.delivery_state ?? null,
+          row.scheduled_for ? toMysqlDatetime(row.scheduled_for) : null,
         ]
       );
+    },
+
+    async recordDeliveryStatus(update: DeliveryStatusUpdate) {
+      /**
+       * The provider's later word replaces ours, but only downward — see the
+       * note on the Postgres implementation. `affectedRows` counts matched
+       * rows here rather than changed ones, which is what this needs: a
+       * repeated `delivered` callback for the same message is a match, not a
+       * miss, and reporting it as unmatched would make Meta's normal retry
+       * behaviour look like a bug.
+       */
+      // Two statements because MySQL has no RETURNING and this needs a column
+      // from the joined table. The lookup runs first: if it finds nothing
+      // there is no row to update and no event to file the status against.
+      const found = await query<any>(
+        `select ad.revenue_event_id
+           from recovery_actions ra
+           join agent_decisions ad on ad.id = ra.agent_decision_id
+          where ra.provider_message_id = ?
+          limit 1`,
+        [update.provider_message_id]
+      );
+      if (found.length === 0) return null;
+
+      await exec(
+        `update recovery_actions
+            set delivery_state = ?,
+                delivery_state_at = ?,
+                delivery_error = ?,
+                status = case
+                  when ? in ('failed', 'undelivered') then 'failed'
+                  else status
+                end
+          where provider_message_id = ?`,
+        [
+          update.state,
+          toMysqlDatetime(update.at),
+          update.error ?? null,
+          update.state,
+          update.provider_message_id,
+        ]
+      );
+      return found[0].revenue_event_id;
+    },
+
+    async listDueActions(nowIso: string, limit: number): Promise<DueAction[]> {
+      const rows = await query<any>(
+        `select ra.id, ad.revenue_event_id, ra.agent_decision_id, ra.channel,
+                ra.attempt_number, ra.scheduled_for,
+                re.amount_paise, re.currency, re.customer_contact
+           from recovery_actions ra
+           join agent_decisions ad on ad.id = ra.agent_decision_id
+           join revenue_events re on re.id = ad.revenue_event_id
+          where ra.scheduled_for is not null
+            and ra.dispatched_at is null
+            and ra.scheduled_for <= ?
+          order by ra.scheduled_for asc
+          limit ?`,
+        [toMysqlDatetime(nowIso), limit]
+      );
+      return rows.map((r) => ({
+        id: r.id,
+        revenue_event_id: r.revenue_event_id,
+        agent_decision_id: r.agent_decision_id,
+        channel: r.channel,
+        attempt_number: Number(r.attempt_number),
+        scheduled_for: iso(r.scheduled_for),
+        amount_paise: Number(r.amount_paise),
+        currency: r.currency,
+        customer_contact: r.customer_contact ?? null,
+      }));
+    },
+
+    async claimDueAction(actionId: string, nowIso: string) {
+      // `dispatched_at is null` in the WHERE clause is the lock. Two
+      // overlapping cron ticks both see the row as due; exactly one update
+      // matches, and the loser skips it rather than sending twice.
+      const n = await affected(
+        `update recovery_actions
+            set dispatched_at = ?
+          where id = ? and dispatched_at is null`,
+        [toMysqlDatetime(nowIso), actionId]
+      );
+      return n > 0;
+    },
+
+    async completeDueAction(update: DispatchResult) {
+      await exec(
+        `update recovery_actions
+            set status = ?,
+                razorpay_payment_link_id =
+                  coalesce(?, razorpay_payment_link_id),
+                provider_message_id = coalesce(?, provider_message_id),
+                delivery_state = coalesce(?, delivery_state),
+                executed_at = ?
+          where id = ?`,
+        [
+          update.status,
+          update.razorpay_payment_link_id ?? null,
+          update.provider_message_id ?? null,
+          update.delivery_state ?? null,
+          toMysqlDatetime(update.executed_at),
+          update.action_id,
+        ]
+      );
+    },
+
+    async hitRateLimit(bucket: string, windowMs: number, nowIso: string) {
+      /**
+       * The increment is one statement and therefore atomic, which is the
+       * property that matters — a per-process counter is per-lambda, and a
+       * platform that spreads a burst across instances never lets any single
+       * one reach its limit.
+       *
+       * The read back is a second statement, because MySQL has no RETURNING.
+       * Both run on one pooled connection so they cannot be separated by a
+       * pool handover, but another instance can still increment between them.
+       * That can only make the count read HIGHER than this request's own,
+       * never lower, so the limiter errs toward refusing early under
+       * contention. For shedding load from a public endpoint that is the
+       * direction to be wrong in.
+       *
+       * MySQL evaluates ON DUPLICATE KEY assignments left to right, so
+       * `reset_at` still holds the old value when `count` is computed from
+       * it, and again when its own expression reads it. The order of these
+       * two lines is load-bearing.
+       */
+      const resetAt = new Date(new Date(nowIso).getTime() + windowMs).toISOString();
+      const nowDt = toMysqlDatetime(nowIso);
+      const resetDt = toMysqlDatetime(resetAt);
+
+      const conn = await pool.getConnection();
+      try {
+        await conn.execute(
+          `insert into rate_limit_windows (bucket, \`count\`, reset_at)
+           values (?, 1, ?)
+           on duplicate key update
+             \`count\` = if(reset_at <= ?, 1, \`count\` + 1),
+             reset_at = if(reset_at <= ?, ?, reset_at)`,
+          [bucket, resetDt, nowDt, nowDt, resetDt]
+        );
+        const [rows] = await conn.query(
+          "select `count`, reset_at from rate_limit_windows where bucket = ?",
+          [bucket]
+        );
+        const row = (rows as any[])[0];
+        return { count: Number(row.count), resetAt: iso(row.reset_at) };
+      } finally {
+        conn.release();
+      }
     },
 
     async countLiveLinks() {
@@ -464,11 +638,20 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
     // --- dashboard reads
 
-    async listEvents(): Promise<RevenueEventRow[]> {
+    async countEvents() {
+      const rows = await query<any>("select count(*) as n from revenue_events");
+      return Number(rows[0]?.n ?? 0);
+    },
+
+    async listEvents(limit?: number): Promise<RevenueEventRow[]> {
+      // Most recent first only when bounded — an ORDER BY the unbounded
+      // callers do not need is a sort of the whole table on every poll.
       const rows = await query<any>(
         `select id, customer_id, amount_paise, root_cause, razorpay_order_id,
                 received_at, processed_at
-           from revenue_events`
+           from revenue_events
+          ${limit ? "order by received_at desc limit ?" : ""}`,
+        limit ? [limit] : []
       );
       return rows.map((r) => ({
         id: r.id,

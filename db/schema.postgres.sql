@@ -155,3 +155,52 @@ create unique index if not exists uq_agent_decisions_event
 
 alter table agent_decisions add column if not exists from_cache boolean not null default false;
 alter table agent_decisions add column if not exists cache_key text;
+
+-- A rate-limit counter that survives the process.
+--
+-- The previous limiter kept its window in module memory. That is exactly
+-- right for a long-lived server and worth almost nothing on Vercel, where
+-- each concurrent lambda gets its own module scope and therefore its own
+-- counter: thirty-four consecutive requests against a limit of thirty all
+-- returned 200 in production, because the platform had spread them across
+-- enough instances that no single counter reached its limit.
+--
+-- A shared counter has to live somewhere both instances can see. This is that
+-- somewhere. Redis would also serve, and would be the choice at real traffic;
+-- the database is chosen here because it is already provisioned, already on
+-- the request path, and needs no second service to be running for the limit
+-- to hold. The endpoints being protected are expensive precisely because they
+-- query THIS database, so one cheap upsert to refuse a full-table scan is a
+-- trade that pays for itself.
+create table if not exists rate_limit_windows (
+  bucket text primary key,
+  count int not null,
+  reset_at timestamptz not null
+);
+
+-- What Meta later said about a message we sent.
+--
+-- The send call returns `accepted` and a message id, which is weaker than
+-- delivered: an unverified recipient is accepted and silently dropped. The id
+-- is the only handle that connects our audit row to Meta's own record of it,
+-- so the delivery webhook has nothing to join on without this column.
+alter table recovery_actions add column if not exists provider_message_id text;
+alter table recovery_actions add column if not exists delivery_state text;
+alter table recovery_actions add column if not exists delivery_state_at timestamptz;
+alter table recovery_actions add column if not exists delivery_error text;
+
+create index if not exists idx_recovery_actions_provider_message
+  on recovery_actions(provider_message_id);
+
+-- When a send should happen, as distinct from when it was decided.
+--
+-- For insufficient_funds the useful question is not only which channel but
+-- which hour: a card with no balance at 2pm may well have one after payday
+-- lands in the evening. Null means "now", which is what every action written
+-- before this column existed meant.
+alter table recovery_actions add column if not exists scheduled_for timestamptz;
+alter table recovery_actions add column if not exists dispatched_at timestamptz;
+
+create index if not exists idx_recovery_actions_due
+  on recovery_actions(scheduled_for)
+  where scheduled_for is not null and dispatched_at is null;

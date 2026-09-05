@@ -826,13 +826,55 @@ body {
 
 /* Focus is visible on every interactive surface, not only the ones that
    happen to be native controls. A ledger row is a link and has to look
-   focusable when tabbed to. */
-.rr-row:focus-visible,
-.rr-nav a:focus-visible,
-a:focus-visible {
+   focusable when tabbed to.
+
+   Written as a catch-all rather than a list of class names. The list version
+   was here first and it was wrong in the way lists always are: the Pause
+   toggle is a `button.rr-chip`, it was not on the list, and it fell back to
+   the browser's default outline — a thin dark ring that is effectively
+   invisible against this surface. A focus style that has to be remembered for
+   each new control is a focus style that will be missing from the next one. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible,
+.rr-row:focus-visible {
   outline: 2px solid var(--rr-blue);
   outline-offset: 2px;
   border-radius: 10px;
+}
+
+/* Keyboard users should not have to tab through the whole nav on every page
+   to reach the thing they came for. Visually hidden until focused, which is
+   the one case where hiding something from sighted users is the correct
+   behaviour rather than a shortcut. */
+.rr-skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 10px 16px;
+  background: var(--rr-blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 0 0 10px 0;
+  text-decoration: none;
+}
+
+.rr-skip:focus {
+  left: 0;
+}
+
+/* Screen-reader-only text that is never revealed. Used for headings that
+   give the page a landmark structure the visual design conveys by layout. */
+.rr-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 

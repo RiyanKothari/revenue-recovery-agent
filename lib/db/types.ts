@@ -99,6 +99,41 @@ export interface RecoveryActionInsert {
   status: string;
   attempt_number: number;
   razorpay_payment_link_id?: string | null;
+  /**
+   * Meta's id for the message, stored because it is the only handle that
+   * connects this row to Meta's own record of it. Without it a later delivery
+   * callback has nothing to join on, and a claim in the audit trail cannot be
+   * traced back to the message it describes.
+   */
+  provider_message_id?: string | null;
+  /** Meta's own word for it. `accepted` is weaker than delivered. */
+  delivery_state?: string | null;
+  /**
+   * When this send should happen, if not now. Null means immediately, which
+   * is what every action written before this column existed meant.
+   */
+  scheduled_for?: string | null;
+}
+
+/**
+ * A send that was decided but deliberately deferred, loaded with everything
+ * the dispatcher needs to execute it without re-deriving the decision.
+ *
+ * The decision is not revisited at dispatch time. It was made under the
+ * guardrails, recorded, and audited; re-running the gates hours later against
+ * a changed world would mean the trail describes a decision the system did
+ * not act on.
+ */
+export interface DueAction {
+  id: string;
+  revenue_event_id: string;
+  agent_decision_id: string;
+  channel: string;
+  attempt_number: number;
+  scheduled_for: string;
+  amount_paise: number;
+  currency: string;
+  customer_contact: string | null;
 }
 
 export interface RecoveryActionRow {
@@ -150,6 +185,23 @@ export interface RetryAttempt {
    * decision-relevant fact about a prior attempt was the one fact missing.
    */
   converted: boolean;
+}
+
+export interface DeliveryStatusUpdate {
+  provider_message_id: string;
+  /** The provider's own vocabulary, not ours — `sent`, `delivered`, `read`, `failed`. */
+  state: string;
+  at: string;
+  error?: string | null;
+}
+
+export interface DispatchResult {
+  action_id: string;
+  status: string;
+  razorpay_payment_link_id?: string | null;
+  provider_message_id?: string | null;
+  delivery_state?: string | null;
+  executed_at: string;
 }
 
 /** Signals a unique-constraint hit without leaking the engine's error code. */
@@ -251,7 +303,24 @@ export interface RecoveryDb {
   insertOutcome(row: OutcomeInsert): Promise<InsertResult>;
 
   // --- dashboard reads
-  listEvents(): Promise<RevenueEventRow[]>;
+  /**
+   * Every event, or the most recent `limit` of them.
+   *
+   * Unbounded by default because the conformance verifier must never check a
+   * slice and report a clean pass — see `countEvents`. The bounded form is
+   * for callers that are producing an estimate rather than an attestation.
+   */
+  listEvents(limit?: number): Promise<RevenueEventRow[]>;
+  /**
+   * How many events exist, without loading any of them.
+   *
+   * The verifier and the replay engine both read whole tables into memory.
+   * That is correct at this project's volume and wrong at six figures, and
+   * the difference has to be visible to the caller rather than discovered as
+   * an out-of-memory kill. Counting first lets each of them choose: the
+   * verifier refuses, the replay engine truncates and says so.
+   */
+  countEvents(): Promise<number>;
   listOutcomes(): Promise<
     {
       revenue_event_id: string;
@@ -301,6 +370,53 @@ export interface RecoveryDb {
   listDecisions(): Promise<DecisionRow[]>;
   listRecoveryActions(): Promise<RecoveryActionRow[]>;
   listConsent(): Promise<{ customer_id: string; dnd: boolean }[]>;
+
+  // --- delivery callbacks
+  /**
+   * Records what the provider later said about a message.
+   *
+   * Returns the revenue event the message belonged to, or null when no action
+   * carries that id.
+   *
+   * An unmatched callback is normal traffic — Meta re-sends statuses, and a
+   * status can arrive for a message this deployment did not send — so it must
+   * not be treated as an error. The event id is returned rather than a
+   * boolean because the audit trail is keyed on events: a delivery status
+   * that cannot be filed against the payment it chased is a fact with nowhere
+   * to live.
+   */
+  recordDeliveryStatus(update: DeliveryStatusUpdate): Promise<string | null>;
+
+  // --- scheduled sends
+  /** Sends whose time has come and which have not yet been dispatched. */
+  listDueActions(nowIso: string, limit: number): Promise<DueAction[]>;
+  /**
+   * Claims one due send, atomically.
+   *
+   * Two cron invocations can overlap — a slow dispatch and the next tick —
+   * and both would otherwise read the same due row and send twice. The claim
+   * is a conditional update that only one of them can win: `dispatched_at is
+   * null` in the WHERE clause is the lock. Returns false for the loser, which
+   * then skips the row rather than racing it.
+   */
+  claimDueAction(actionId: string, nowIso: string): Promise<boolean>;
+  /** Records how a dispatched send actually went. */
+  completeDueAction(update: DispatchResult): Promise<void>;
+
+  // --- rate limiting
+  /**
+   * Increments the shared counter for `bucket` and returns its new value.
+   *
+   * One statement, so the increment is atomic across every instance sharing
+   * this database — which is the entire point, since an in-memory counter is
+   * per-lambda and a platform that spreads a burst across instances never
+   * lets any single one reach its limit.
+   */
+  hitRateLimit(
+    bucket: string,
+    windowMs: number,
+    nowIso: string
+  ): Promise<{ count: number; resetAt: string }>;
 
   // --- seeding
   upsertConsent(
