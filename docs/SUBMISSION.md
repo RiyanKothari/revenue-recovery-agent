@@ -34,17 +34,28 @@ API.
 **2. It proves the money came back because of it.** Ten percent of otherwise
 eligible events are deliberately left untreated as a holdout, so recovery is
 *measured* against a do-nothing baseline rather than attributed to whatever
-happened after a message. On a 1,200-event batch the treated arm recovered at
-32.2% against the holdout's 18.2% — a +14.0pp lift, 95% CI [5.4, 22.6],
-₹4,72,868 incremental. The dashboard also reports the smallest effect the
+happened after a message. On the deployed instance the treated arm recovers
+at 33.1% against the holdout's 12.1% — a **+21.0pp lift, 95% CI [14.1, 27.9],
+₹7,56,982 incremental**. The dashboard also reports the smallest effect the
 holdout could have detected, so an inconclusive result reads as "this
 experiment was too small to tell" rather than "the agent didn't work".
 
 **3. It can prove the safety rules actually held.** A conformance verifier
 re-derives seven invariants from the recorded audit trail using code that
-shares nothing with the guardrails that enforce them — 5,415 checks, zero
-violations. This is the piece that earns its keep: during development it
+shares nothing with the guardrails that enforce them — **5,346 checks, zero
+violations**. This is the piece that earns its keep: during development it
 caught a real consent violation that every other signal reported as success.
+A companion Red Team screen attacks the live system with ten hostile inputs
+and shows each being refused, because a fail-closed guardrail looks exactly
+like no guardrail until something attacks it.
+
+**And it has done all of this on real Razorpay traffic.** Six genuine
+payment.failed events reached the deployed instance today, producing three
+real payment links through Razorpay's MCP server and a WhatsApp that arrived
+on a phone. Three guardrails refused real events along the way: signature
+verification rejected six deliveries while a secret was unset, and the
+cooldown blocked a second nudge to a customer contacted eighteen minutes
+earlier.
 
 The system is honest about its own limits on screen. The demo batch is
 synthetic, and the dashboard says so in an amber banner, because the entire
@@ -75,18 +86,19 @@ Suggested five-minute structure, extending the 90-second version:
 
 | Time | Beat |
 |---|---|
-| 0:00–0:40 | The problem, and why "send a nudge" is the easy part |
-| 0:40–1:30 | Architecture: classify → guardrails → EV gate → holdout → agent → execute. Stress that guardrails run *before* the model |
-| 1:30–2:30 | The live ledger. Read a rationale aloud, then click through to the trace |
-| 2:30–3:30 | Measured lift, the confidence interval, and the statistical-power line |
-| 3:30–4:20 | Conformance panel — and the DND violation it caught |
-| 4:20–5:00 | Decision reuse (11 calls → 908 decisions), Policy Lab, and what's next |
+| 0:00–0:25 | Cold open on the phone: the real WhatsApp the agent sent |
+| 0:25–1:00 | The problem, and why "send a nudge" is the easy part |
+| 1:00–1:50 | Fail a real payment live; watch it land in the ledger |
+| 1:50–2:40 | Click into the trace — guardrails run *before* the model, visibly |
+| 2:40–3:20 | Measured lift, the interval, and the statistical-power line |
+| 3:20–4:20 | Red Team: attack the live system on camera |
+| 4:20–5:00 | What real data taught, and the synthetic caveat said out loud |
 
 ---
 
 ## Build Challenges & Technical Obstacles
 
-Six that changed the system. All are documented in full in
+Nine that changed the system. All are documented in full in
 `docs/BUILD-CHALLENGES.md` (~20 entries).
 
 **1. The webhook signature check had an authentication bypass.**
@@ -159,6 +171,36 @@ observations cannot resolve a 15-point difference. The experiment was
 underpowered before it ran. The fix was more volume at the honest holdout
 rather than inflating the holdout to make the demo look better.
 
+**7. Real payloads exposed a classifier written against my own fixtures.**
+The synthetic generator emitted an error code and a prose description, so
+every classifier rule was a pattern tuned against sentences I had written
+myself. A genuine Razorpay failure arrives with `error_description: "Payment
+failed"` — carrying nothing — and the actual cause two keys away in
+`error_reason` and `error_source`, which nothing was reading. Real events
+classified as `unknown` and went to human review: correct behaviour on the
+information available, and the wrong information to have been looking at.
+The fixtures and the parser were wrong in the same direction, which is the
+failure mode synthetic testing cannot detect by construction.
+
+**8. Concurrent redeliveries produced two payment links for one event.**
+Razorpay delivered the same webhook twice at once. The idempotency check is a
+read followed by a write, both requests interleaved between them, and one
+customer received two links four seconds apart — the precise harm the
+guardrails exist to prevent. Neither caught it: the retry ceiling counts
+actions and both read zero before either wrote, and the cooldown looks for
+contact in a window ending at the event's own timestamp, which correctly
+excludes sends landing after it. No application-level care closes that
+window; a unique constraint does. The contract test fires three inserts
+concurrently, because the sequential version passes without the constraint.
+
+**9. Delivery was recorded as success when Meta had only accepted.**
+Meta returns 200 with a message id for any recipient and silently drops those
+not on a test number's allowed list. Three messages were logged as delivered
+and none arrived. On a project whose entire argument is an honest audit
+trail, asserting delivery it could not evidence — with no message id stored
+to trace the claim — was the worst available category of bug. It now records
+Meta's own word, `accepted`, alongside the id.
+
 **Also worth noting:** the MySQL implementation compiled for weeks without a
 single query ever executing — a strange kind of "dual database support" to
 advertise. Both drivers now run the same 20-case contract sequence and are
@@ -174,6 +216,8 @@ does not exist.
 | Stack | Next.js 14, TypeScript, Razorpay Blade, PostgreSQL + MySQL |
 | Agent | Gemini via a provider-agnostic adapter (Anthropic supported) |
 | Execution | Razorpay MCP server (42 tools), WhatsApp Cloud API |
-| Tests | 239, plus a dual-driver database contract suite |
-| Conformance | 7 invariants, 5,415 checks, 0 violations |
+| Tests | 265, including a 23-case dual-driver database contract suite |
+| Conformance | 7 invariants, 5,346 checks, 0 violations |
+| Red Team | 10 hostile inputs against the live defences, all refused |
+| Real traffic | 6 genuine Razorpay events, 3 real MCP links, 1 WhatsApp delivered |
 | Deployment | Vercel (Mumbai) + Supabase Postgres (ap-south-1) |
