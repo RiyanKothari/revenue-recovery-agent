@@ -156,7 +156,12 @@ export async function executeAction(
           status: "simulated",
         };
 
-    let deliveryResult: { success: boolean; error?: string } = { success: true };
+    let deliveryResult: {
+      success: boolean;
+      error?: string;
+      messageId?: string;
+      status?: string;
+    } = { success: true };
 
     if (channel === "whatsapp" && live) {
       deliveryResult = await sendWhatsApp({
@@ -182,6 +187,13 @@ export async function executeAction(
     await audit(revenueEventId, "action_executed", {
       channel,
       payment_link_id: link.paymentLinkId,
+      // "accepted" is what Meta actually tells us, and it is weaker than
+      // delivered — an unverified recipient is accepted and silently dropped.
+      // The message id is recorded so a claim in this trail can be traced
+      // back to a message Meta can be asked about.
+      delivery_accepted: deliveryResult.success,
+      delivery_status: deliveryResult.status,
+      whatsapp_message_id: deliveryResult.messageId,
       delivery_success: deliveryResult.success,
       delivery_error: deliveryResult.error,
       // Says which links are real. Once the test-mode budget is spent the

@@ -198,3 +198,41 @@ test("live sending requires the deliberate word", () => {
   assert.equal(isDryRun({ WHATSAPP_DRY_RUN: "false" } as any), false);
   assert.equal(isDryRun({} as any), true, "an absent variable never sends");
 });
+
+test("Meta's own status is carried through, not rounded up to delivered", async () => {
+  // "accepted" means queued. Meta queues a message for ANY recipient and only
+  // actually delivers to numbers on the test number's allowed list — so an
+  // unverified recipient produces an ordinary 200 with a message id and
+  // nothing ever arrives. The audit trail was recording that as delivery.
+  const realFetch = globalThis.fetch;
+  (globalThis as any).fetch = async () =>
+    new Response(
+      JSON.stringify({
+        messages: [{ id: "wamid.TEST", message_status: "accepted" }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+  try {
+    const result = await withEnv(
+      {
+        WHATSAPP_PHONE_NUMBER_ID: "123",
+        WHATSAPP_ACCESS_TOKEN: "tok",
+        WHATSAPP_DRY_RUN: "false",
+        WHATSAPP_TEST_RECIPIENT: "+919812345678",
+      },
+      () =>
+        sendWhatsAppRetryNudge({
+          toPhoneE164: "+919812345678",
+          paymentLinkUrl: "u",
+          amountRupees: 1,
+        })
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.messageId, "wamid.TEST", "the id must be traceable");
+    assert.equal(result.status, "accepted", "Meta's word, not ours");
+  } finally {
+    (globalThis as any).fetch = realFetch;
+  }
+});

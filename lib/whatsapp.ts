@@ -65,8 +65,25 @@ export function isDryRun(env = process.env): boolean {
 }
 
 export interface SendResult {
+  /** Meta ACCEPTED the message. Not the same as delivered — see `status`. */
   success: boolean;
   messageId?: string;
+  /**
+   * Meta's own word for what happened, verbatim — usually "accepted".
+   *
+   * Recorded because "accepted" and "delivered" are different claims and the
+   * audit trail was making the stronger one. Meta queues a message for any
+   * recipient and only actually delivers to numbers on the test number's
+   * allowed list; an unverified recipient produces a perfectly ordinary 200
+   * with a message id, and nothing ever arrives. Writing "delivery_success"
+   * against that is the audit trail asserting something it cannot evidence,
+   * which on this project is the worst category of bug.
+   *
+   * True delivery status arrives asynchronously on Meta's own webhook, which
+   * this project does not consume — so the honest ceiling here is "accepted",
+   * and it should say so rather than round up.
+   */
+  status?: string;
   error?: string;
 }
 
@@ -187,7 +204,11 @@ export async function sendWhatsAppRetryNudge(params: {
     return { success: false, error: "whatsapp_no_message_id: accepted but nothing queued" };
   }
 
-  return { success: true, messageId };
+  return {
+    success: true,
+    messageId,
+    status: data?.messages?.[0]?.message_status ?? "accepted",
+  };
 }
 
 /**
