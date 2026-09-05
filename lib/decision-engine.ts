@@ -36,6 +36,11 @@ export interface Decision {
   rationale: string;
   boundedBy: string[];
   decisionId: string;
+  /**
+   * True when another delivery of this event had already decided it. The
+   * caller must NOT execute — the action for this event has been taken.
+   */
+  alreadyDecided?: boolean;
 }
 
 const SYSTEM_PROMPT = `You are a payment-recovery decision agent. You may ONLY choose one action from this fixed list:
@@ -112,6 +117,7 @@ export async function decide(
       rationale: cached.rationale,
       boundedBy: [],
       decisionId: saved.id,
+      alreadyDecided: saved.duplicate === true,
     };
   }
 
@@ -207,5 +213,5 @@ export async function decide(
     cache_key: cacheKey,
   });
 
-  return { ...decision, decisionId: saved.id };
+  return { ...decision, decisionId: saved.id, alreadyDecided: saved.duplicate === true };
 }

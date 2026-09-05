@@ -557,3 +557,58 @@ forEachDriver("a resumed event's FIRST decision is the one returned", async (db,
 
   assert.equal((await db.findDecisionForEvent(id))?.rationale, "first", driver);
 });
+
+forEachDriver("a second decision for the same event is refused atomically", async (db, driver) => {
+  // The webhook's "has this been decided?" check is a read followed by a
+  // write, and two concurrent redeliveries can interleave between them. That
+  // happened against real Razorpay traffic: both saw no decision, both
+  // proceeded, and one customer received two payment links four seconds
+  // apart. Only the constraint closes that window.
+  const id = await newEvent(db, `race_${driver}`);
+
+  const row = {
+    revenue_event_id: id,
+    root_cause: "gateway_error",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "first",
+    bounded_by: [],
+  };
+
+  const first = await db.insertDecision(row);
+  assert.ok(!first.duplicate, `${driver}: the first decision is recorded`);
+
+  const second = await db.insertDecision({ ...row, rationale: "second" });
+  assert.equal(second.duplicate, true, `${driver}: the second is refused`);
+  assert.equal(second.id, first.id, `${driver}: it returns the winner's id`);
+
+  // And only one decision exists, whichever raced.
+  const stored = await db.findDecisionForEvent(id);
+  assert.equal(stored?.rationale, "first", `${driver}: the first decision stands`);
+});
+
+forEachDriver("two simultaneous decisions leave exactly one", async (db, driver) => {
+  // The sequential test above passes even without a constraint. This one
+  // does not: it fires both inserts before either resolves.
+  const id = await newEvent(db, `parallel_${driver}`);
+  const row = {
+    revenue_event_id: id,
+    root_cause: "gateway_error",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "concurrent",
+    bounded_by: [],
+  };
+
+  const results = await Promise.all([
+    db.insertDecision(row),
+    db.insertDecision(row),
+    db.insertDecision(row),
+  ]);
+
+  const winners = results.filter((r) => !r.duplicate);
+  assert.equal(winners.length, 1, `${driver}: exactly one insert wins`);
+  assert.equal(
+    new Set(results.map((r) => r.id)).size,
+    1,
+    `${driver}: all three report the same decision id`
+  );
+});

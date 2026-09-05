@@ -416,6 +416,25 @@ async function processEvent({
     customerRetryHistory: await getCustomerRetryHistory(customerId),
   });
 
+  /**
+   * Another delivery decided this event first.
+   *
+   * The idempotency check earlier in this route is a read followed by a
+   * write, and two concurrent redeliveries interleaved between them — both
+   * saw no decision, both proceeded, and one customer received two payment
+   * links four seconds apart. The unique constraint on agent_decisions is
+   * what closes that window; this is where the loser of the race stops.
+   */
+  if (decision.alreadyDecided) {
+    await logAudit(eventId, "stopping_rule_triggered", {
+      reason: "concurrent_delivery_already_decided",
+      detail:
+        "Another delivery of this event reached a decision first. No second action taken.",
+      decision_id: decision.decisionId,
+    });
+    return NextResponse.json({ status: "duplicate_ignored", reason: "already_decided" });
+  }
+
   // --- 7. Execute + log
   await executeAction({
     revenueEventId: eventId,

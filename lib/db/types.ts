@@ -197,7 +197,18 @@ export interface RecoveryDb {
 
   // --- agent + execution
   countDecisionsForEvent(revenueEventId: string): Promise<number>;
-  insertDecision(row: DecisionInsert): Promise<{ id: string }>;
+  /**
+   * Records the agent's decision, at most once per event.
+   *
+   * `duplicate: true` means another delivery of the same event already
+   * decided it, and the id returned is that decision's. The webhook's
+   * "have we decided yet?" check is a read followed by a write, and two
+   * concurrent redeliveries interleaved between the two — both saw no
+   * decision, both proceeded, and one customer got two payment links four
+   * seconds apart. A unique constraint is the only thing that makes the
+   * check atomic; the application cannot do it by remembering harder.
+   */
+  insertDecision(row: DecisionInsert): Promise<{ id: string; duplicate?: boolean }>;
   insertRecoveryAction(row: RecoveryActionInsert): Promise<void>;
   /**
    * How many REAL Razorpay payment links this deployment has created.

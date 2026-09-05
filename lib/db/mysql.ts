@@ -279,7 +279,8 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
     async insertDecision(row: DecisionInsert) {
       const id = randomUUID();
-      await exec(
+      try {
+        await exec(
         `insert into agent_decisions
            (id, revenue_event_id, root_cause, chosen_action, rationale, bounded_by, from_cache, cache_key)
          values (?,?,?,?,?,?,?,?)`,
@@ -290,10 +291,19 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           row.chosen_action,
           row.rationale,
           JSON.stringify(row.bounded_by),
-          row.from_cache ? 1 : 0,
-          row.cache_key ?? null,
-        ]
-      );
+            row.from_cache ? 1 : 0,
+            row.cache_key ?? null,
+          ]
+        );
+      } catch (err: any) {
+        // 1062 is MySQL's unique violation — another delivery decided first.
+        if (err?.errno !== 1062) throw err;
+        const existing = await query<{ id: string }>(
+          "select id from agent_decisions where revenue_event_id = ? order by decided_at asc limit 1",
+          [row.revenue_event_id]
+        );
+        return { id: existing[0].id, duplicate: true };
+      }
       return { id };
     },
 

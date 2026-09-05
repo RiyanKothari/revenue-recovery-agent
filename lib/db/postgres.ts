@@ -261,7 +261,9 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       const rows = await query<{ id: string }>(
         `insert into agent_decisions
            (revenue_event_id, root_cause, chosen_action, rationale, bounded_by, from_cache, cache_key)
-         values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+         values ($1,$2,$3,$4,$5,$6,$7)
+         on conflict (revenue_event_id) do nothing
+         returning id`,
         [
           row.revenue_event_id,
           row.root_cause,
@@ -272,7 +274,17 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           row.cache_key ?? null,
         ]
       );
-      return { id: rows[0].id };
+
+      if (rows.length > 0) return { id: rows[0].id };
+
+      // The constraint refused it: another delivery decided this event first.
+      // Return that decision's id so the caller can recognise the duplicate
+      // rather than inventing a second one.
+      const existing = await query<{ id: string }>(
+        "select id from agent_decisions where revenue_event_id = $1 order by decided_at asc limit 1",
+        [row.revenue_event_id]
+      );
+      return { id: existing[0].id, duplicate: true };
     },
 
     // --- decision memoisation

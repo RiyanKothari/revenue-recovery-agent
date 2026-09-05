@@ -144,5 +144,15 @@ create index idx_experiment_assignments_arm on experiment_assignments(arm);
 -- Schema evolution. MySQL has no `add column if not exists`, so these are
 -- written plainly and the migrator tolerates ER_DUP_FIELDNAME (1060) on
 -- re-runs — see scripts/migrate.ts.
+
+-- One decision per event, enforced by the database.
+--
+-- The webhook's "has this been decided?" check is a read followed by a write,
+-- and two concurrent redeliveries can interleave between them: both see no
+-- decision, both proceed, and one customer receives two payment links seconds
+-- apart. That happened against real Razorpay traffic. No amount of
+-- application-level care closes that window — only the constraint does.
+create unique index uq_agent_decisions_event on agent_decisions(revenue_event_id);
+
 alter table agent_decisions add column from_cache tinyint(1) not null default 0;
 alter table agent_decisions add column cache_key varchar(191);

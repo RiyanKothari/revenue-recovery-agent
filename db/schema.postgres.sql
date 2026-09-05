@@ -142,5 +142,16 @@ create index if not exists idx_audit_log_event on audit_log(revenue_event_id, cr
 -- so columns added after the first migration need explicit ALTERs. These are
 -- idempotent and safe to re-run: a fresh database gets them from the CREATE
 -- above and skips these; an existing one picks them up here.
+
+-- One decision per event, enforced by the database.
+--
+-- The webhook's "has this been decided?" check is a read followed by a write,
+-- and two concurrent redeliveries can interleave between them: both see no
+-- decision, both proceed, and one customer receives two payment links seconds
+-- apart. That happened against real Razorpay traffic. No amount of
+-- application-level care closes that window — only the constraint does.
+create unique index if not exists uq_agent_decisions_event
+  on agent_decisions(revenue_event_id);
+
 alter table agent_decisions add column if not exists from_cache boolean not null default false;
 alter table agent_decisions add column if not exists cache_key text;
