@@ -2,6 +2,14 @@
 
 **Track 03: AI Revenue Recovery — Razorpay AI Buildathon 2026**
 
+**Live:** https://revenue-recovery-agent-plum.vercel.app/dashboard
+· [Decision trace](https://revenue-recovery-agent-plum.vercel.app/dashboard)
+· [Policy Lab](https://revenue-recovery-agent-plum.vercel.app/dashboard/policy)
+· [Health](https://revenue-recovery-agent-plum.vercel.app/api/health)
+
+Deployed on Vercel (Mumbai) against Supabase Postgres (ap-south-1), the same
+region Razorpay's webhooks originate from.
+
 An agent that detects revenue-at-risk events (starting with failed payments), reasons over the root cause within hard-coded guardrails, and executes a bounded recovery workflow through Razorpay's own MCP server and WhatsApp — with every step logged to an audit trail and measured against a real batch.
 
 This project is explicitly positioned as the **explainability and audit layer** on top of the failed-payment recovery pattern Razorpay validated in its own Sprint 2026 launch (WhatsApp re-engagement for failed autopay debits, UPI mandate retry) — not a generic recovery bot built from the brief alone.
