@@ -462,7 +462,11 @@ async function checkWhatsApp() {
 
   // Send safety is a hard requirement before seeding, not a nicety: the
   // synthetic batch uses plausible real Indian mobile numbers.
-  const dryRun = process.env.WHATSAPP_DRY_RUN === "true";
+  // Uses the same predicate the send path uses. A preflight with its own copy
+  // of a safety check can report "dry run enabled" while the sender disagrees,
+  // which is worse than not checking at all.
+  const { isDryRun } = await import("../lib/whatsapp");
+  const dryRun = isDryRun();
   const testRecipient = process.env.WHATSAPP_TEST_RECIPIENT;
 
   record({
@@ -476,7 +480,7 @@ async function checkWhatsApp() {
     fix:
       dryRun || testRecipient
         ? undefined
-        : "Set WHATSAPP_DRY_RUN=true before seeding — the synthetic batch uses plausible REAL mobile numbers",
+        : "Sending is enabled (WHATSAPP_DRY_RUN=false). Unset it or set WHATSAPP_TEST_RECIPIENT — the synthetic batch uses plausible REAL mobile numbers",
   });
 
   await checkWhatsAppTemplate(token);

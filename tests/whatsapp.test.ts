@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   describeMetaError,
+  isDryRun,
   isSyntheticNumber,
   normaliseRecipient,
   sendWhatsAppRetryNudge,
@@ -163,4 +164,37 @@ test("an unrecognised error still carries its code and message", () => {
 test("an empty error body does not throw", () => {
   assert.ok(describeMetaError(null, 500).length > 0);
   assert.ok(describeMetaError({}, 500).length > 0);
+});
+
+/**
+ * The send guard is the one rule whose failure reaches strangers' phones, so
+ * it fails closed like every other rule in this system. It did not always:
+ * it engaged only on an exact "true", and an edit that left the line reading
+ * `WHATSAPP_DRY_RUN=true          -> log instead of sending (safest)` silently
+ * switched the pipeline to live sends.
+ */
+test("anything other than an explicit false means dry run", () => {
+  for (const value of [
+    undefined,
+    "",
+    "true",
+    "TRUE",
+    " true ",
+    "yes",
+    "0",
+    "true          -> log instead of sending (safest)", // the real corruption
+    "False ", // whitespace tolerated on the explicit opt-out
+  ]) {
+    const dry = isDryRun({ WHATSAPP_DRY_RUN: value } as any);
+    if (value === "False ") {
+      assert.equal(dry, false, "an explicit false, whitespace aside, sends");
+    } else {
+      assert.equal(dry, true, `${JSON.stringify(value)} must not enable live sends`);
+    }
+  }
+});
+
+test("live sending requires the deliberate word", () => {
+  assert.equal(isDryRun({ WHATSAPP_DRY_RUN: "false" } as any), false);
+  assert.equal(isDryRun({} as any), true, "an absent variable never sends");
 });

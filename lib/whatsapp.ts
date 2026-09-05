@@ -44,6 +44,26 @@ export function normaliseRecipient(phone: string): string {
   return phone.replace(/[^\d]/g, "");
 }
 
+/**
+ * Dry run is the default, and must be switched OFF explicitly.
+ *
+ * This previously engaged only on an exact `"true"`, which made the single
+ * most consequential guard in the project fail OPEN: an unset variable, a
+ * typo, or a trailing comment all meant live messages to real phone numbers.
+ * That is not hypothetical — an edit to .env.local left the line reading
+ * `WHATSAPP_DRY_RUN=true          -> log instead of sending (safest)`, which
+ * is not the string "true", and the pipeline switched itself to live sends
+ * without a word.
+ *
+ * Every other safety rule here fails closed. This one now does too: sending
+ * requires the deliberate, unambiguous `false`, and anything else — blank,
+ * malformed, absent — logs instead. The cost of being wrong is asymmetric,
+ * and the direction of the asymmetry is not close.
+ */
+export function isDryRun(env = process.env): boolean {
+  return env.WHATSAPP_DRY_RUN?.trim().toLowerCase() !== "false";
+}
+
 export interface SendResult {
   success: boolean;
   messageId?: string;
@@ -63,7 +83,7 @@ export async function sendWhatsAppRetryNudge(params: {
   }
 
   // --- Send safety, before anything leaves the process.
-  if (process.env.WHATSAPP_DRY_RUN === "true") {
+  if (isDryRun()) {
     console.log(
       `[whatsapp:dry-run] would send ₹${params.amountRupees.toFixed(2)} retry link to ${params.toPhoneE164}`
     );
