@@ -5,3 +5,6 @@ node_modules/
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Deploy-time secrets, pasted into Vercel. Never committed.
+vercel-env.txt
