@@ -139,7 +139,7 @@ dashboard would read a CDC stream rather than polling the transactional store.
 | Framework | Next.js 14 (App Router) | One deployable for the webhook receiver, the API and the dashboard |
 | Language | TypeScript 5.5 (strict) | The safety rules are types where they can be, e.g. `dndRespected: true` is a literal so no future policy can relax consent |
 | UI system | [`@razorpay/blade`](https://blade.razorpay.com) v12 | Razorpay's own design system, on `styled-components` 5 |
-| Localisation | `@razorpay/i18nify-react` | Indian number and currency formatting |
+| Localisation | `@razorpay/i18nify-js` | Required by Blade: its PhoneNumberInput imports it, so the barrel export needs it present |
 | Motion | `framer-motion` | Feed transitions, reduced-motion aware |
 | Validation | `zod` | Model responses are schema-validated before they are trusted |
 

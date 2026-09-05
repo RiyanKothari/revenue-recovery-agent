@@ -33,6 +33,17 @@ function harness(overrides: {
   };
 
   const deps: Partial<ExecutorDeps> = {
+    /**
+     * Pinned, because the real resolver reads the wall clock.
+     *
+     * These tests assert what the executor does with a send, not what hour it
+     * is. The first version let the real resolver run, so every one of them
+     * passed during the day and failed after 21:00 IST when quiet hours
+     * correctly deferred the send instead. Green when written, red six hours
+     * later. Quiet hours and payday deferral are covered properly in
+     * send-window.test.ts, where the clock is an argument rather than ambient.
+     */
+    resolveWindow: () => ({ scheduledFor: null, reason: "immediate" }),
     db: {
       // No live links recorded, so the test-mode link budget is untouched
       // and every action in these tests takes the real MCP path.
@@ -205,4 +216,34 @@ test("throws when an escalation cannot be recorded", async () => {
     executeAction({ ...baseParams, decision: decision("escalate_human") }, deps),
     /Failed to record recovery action/
   );
+});
+
+test("a deferred window records the action but sends nothing", async () => {
+  /**
+   * The integration the pinned clock above deliberately hides, asserted here
+   * on purpose with the window supplied rather than read from the machine.
+   *
+   * The action row still has to be written. The cooldown and the retry ceiling
+   * both count rows in that table, so a commitment to contact someone this
+   * evening is a contact for their purposes; leaving the row out until dispatch
+   * would let a second event slip past both guardrails in the meantime.
+   */
+  const { recorded, deps } = harness();
+
+  await executeAction(
+    { ...baseParams, decision: decision("send_retry_link_whatsapp") },
+    {
+      ...deps,
+      resolveWindow: () => ({
+        scheduledFor: "2026-09-06T13:30:00.000Z",
+        reason: "deferred_to_evening: test",
+      }),
+    }
+  );
+
+  assert.equal(recorded.linksCreated, 0, "no payment link is burned hours early");
+  assert.equal(recorded.whatsappSends.length, 0, "nothing is sent yet");
+  assert.equal(recorded.inserts.length, 1, "but the action IS recorded");
+  assert.equal(recorded.inserts[0].status, "scheduled");
+  assert.equal(recorded.inserts[0].scheduled_for, "2026-09-06T13:30:00.000Z");
 });

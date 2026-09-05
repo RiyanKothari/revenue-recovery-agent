@@ -30,6 +30,17 @@ export interface ExecutorDeps {
   createLink: typeof createAndSendRetryLink;
   sendWhatsApp: typeof sendWhatsAppRetryNudge;
   audit: typeof logAudit;
+  /**
+   * Injected, not called directly, because it reads the wall clock.
+   *
+   * The first version called `resolveSendWindow` inline. Every test that
+   * asserts a send happened then passed during the day and failed after 21:00
+   * IST, when quiet hours correctly deferred the send instead. The suite was
+   * green when I wrote it and red six hours later, which is the same defect
+   * as the batch generator stamping events from `Date.now()`: a test that
+   * reads the clock is a test whose result depends on when you run it.
+   */
+  resolveWindow: typeof resolveSendWindow;
 }
 
 /** Resolved per call, not at module scope: getDb() throws without a
@@ -40,6 +51,7 @@ function resolveDeps(overrides: Partial<ExecutorDeps>): ExecutorDeps {
     createLink: overrides.createLink ?? createAndSendRetryLink,
     sendWhatsApp: overrides.sendWhatsApp ?? sendWhatsAppRetryNudge,
     audit: overrides.audit ?? logAudit,
+    resolveWindow: overrides.resolveWindow ?? resolveSendWindow,
   };
 }
 
@@ -66,7 +78,7 @@ export async function executeAction(
   },
   deps: Partial<ExecutorDeps> = {}
 ) {
-  const { db, createLink, sendWhatsApp, audit } = resolveDeps(deps);
+  const { db, createLink, sendWhatsApp, audit, resolveWindow } = resolveDeps(deps);
   const { decision, revenueEventId, agentDecisionId, eventTimeIso } = params;
 
   /**
@@ -130,7 +142,7 @@ export async function executeAction(
    * going out in six hours — test-mode links are rationed, and a link created
    * hours early is a link that may be stale by the time anyone taps it.
    */
-  const window = resolveSendWindow(
+  const window = resolveWindow(
     params.rootCause ?? "unknown",
     eventTimeIso ?? new Date().toISOString()
   );
