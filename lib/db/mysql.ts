@@ -8,6 +8,7 @@ import type {
   AttemptReservation,
   DispatchResult,
   DueAction,
+  DecisionFactRow,
   DecisionRow,
   InsertResult,
   NudgeVerificationInsert,
@@ -499,6 +500,48 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           update.action_id,
         ]
       );
+    },
+
+    async listDecisionFacts(limit?: number) {
+      /**
+       * `exists` rather than a join, so a customer with two recovery actions
+       * counts once. See the note in postgres.ts — the status list is the
+       * same, and `scheduled` counts because a queued message is a contact
+       * for every purpose the guardrails already use.
+       */
+      const rows = await query<any>(
+        `select e.id as revenue_event_id,
+                e.customer_id,
+                e.amount_paise,
+                e.payment_method,
+                e.root_cause,
+                coalesce(d.decided_at, e.received_at) as decided_at,
+                a.policy_version,
+                exists (
+                  select 1
+                    from recovery_actions ra
+                    join agent_decisions ad on ad.id = ra.agent_decision_id
+                   where ad.revenue_event_id = e.id
+                     and ra.status in ('sent', 'scheduled', 'simulated')
+                ) as contacted
+           from revenue_events e
+           left join agent_decisions d on d.revenue_event_id = e.id
+           left join experiment_assignments a on a.revenue_event_id = e.id
+          order by e.received_at asc
+          ${limit ? "limit ?" : ""}`,
+        limit ? [limit] : []
+      );
+
+      return rows.map((row: any) => ({
+        revenue_event_id: row.revenue_event_id,
+        customer_id: row.customer_id,
+        amount_paise: Number(row.amount_paise),
+        payment_method: row.payment_method,
+        root_cause: row.root_cause,
+        decided_at: iso(row.decided_at),
+        contacted: bool(row.contacted),
+        policy_version: row.policy_version,
+      }));
     },
 
     async issueNudgeVerification(row: NudgeVerificationInsert): Promise<InsertResult> {

@@ -74,7 +74,7 @@ real webhook route.
 | Safety conformance | **5,346 checks, 0 violations** across 7 invariants |
 | Red team | 10 hostile inputs against live defences, all refused |
 | Model economy | **11 model calls** served 908 decisions |
-| Tests | **311**, including a 30 case dual-driver database contract suite |
+| Tests | **434**, including a 34 case dual-driver database contract suite |
 
 The lift line is the only one that is a measurement rather than an attribution.
 Everything above it credits the agent for customers who might have retried
@@ -152,7 +152,7 @@ dashboard would read a CDC stream rather than polling the transactional store.
 | Abstraction | Repository interface in `lib/db/` | Nothing above it knows which engine is in use; the driver is inferred from the `DATABASE_URL` scheme |
 | Migrations | `scripts/migrate.ts` | Idempotent, driver-aware, no psql or mysql client needed |
 
-Both drivers run the same 30 case contract suite and are asserted to agree.
+Both drivers run the same 34 case contract suite and are asserted to agree.
 
 **Agent and execution**
 
@@ -239,7 +239,7 @@ secure and is not.
 npm test
 ```
 
-311 tests, no credentials required. Every module that touches an external
+434 tests, no credentials required. Every module that touches an external
 service takes it as an injected dependency, so the safety rules are tested
 against simulated database outages and the send path is tested without
 contacting Razorpay or Meta.
@@ -312,7 +312,7 @@ lib/
   whatsapp.ts                Cloud API send path
   invariants.ts              the independent verifier
   db/                        repository interface + postgres and mysql drivers
-tests/                       311 tests
+tests/                       434 tests
 db/                          PostgreSQL and MySQL schemas
 scripts/                     preflight, migrate, verify, batch generator
 ```

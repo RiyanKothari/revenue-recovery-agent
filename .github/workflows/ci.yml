@@ -1,6 +1,6 @@
 # Runs the test suite on every push and pull request.
 #
-# The suite was already 265 tests before this file existed, and every one of
+# The suite was already 265 tests when this file was written, and every one of
 # them ran only when somebody typed `npm test`. That is the same failure mode
 # the conformance verifier exists to catch elsewhere in this project: a check
 # nobody can see run is indistinguishable from one that isn't running.
@@ -15,7 +15,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Every branch, not just main. A feature branch is exactly where a broken
+    # test is cheapest to find, and restricting this to main meant six commits
+    # of new agents were pushed without CI ever seeing them.
+    branches: ['**']
   pull_request:
 
 jobs:

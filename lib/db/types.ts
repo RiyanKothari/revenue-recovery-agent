@@ -228,6 +228,27 @@ export interface NudgeVerificationRow extends NudgeVerificationInsert {
  */
 export type AttemptReservation = { row: NudgeVerificationRow; reserved: boolean } | null;
 
+/**
+ * One decision, flattened for the fairness audit.
+ *
+ * Derived from tables the pipeline already writes rather than recorded a
+ * second time. A separate ledger would need a migration, a backfill and a
+ * writer that could drift from the truth it claims to describe; this cannot
+ * drift, because it IS the truth — the same rows the dashboard and the
+ * conformance verifier read.
+ */
+export interface DecisionFactRow {
+  revenue_event_id: string;
+  customer_id: string | null;
+  amount_paise: number;
+  payment_method: string | null;
+  root_cause: string | null;
+  decided_at: string;
+  /** Whether any recovery action actually reached this customer. */
+  contacted: boolean;
+  policy_version: string | null;
+}
+
 export interface DispatchResult {
   action_id: string;
   status: string;
@@ -435,6 +456,16 @@ export interface RecoveryDb {
   claimDueAction(actionId: string, nowIso: string): Promise<boolean>;
   /** Records how a dispatched send actually went. */
   completeDueAction(update: DispatchResult): Promise<void>;
+
+  /**
+   * Every decision this deployment has made, flattened for the fairness
+   * audit — see lib/ledger-writer.ts.
+   *
+   * Unbounded by default for the same reason the conformance verifier reads
+   * whole tables: an audit that silently examines a slice and reports no
+   * disparity has told you nothing, and has told it to you confidently.
+   */
+  listDecisionFacts(limit?: number): Promise<DecisionFactRow[]>;
 
   // --- message authentication (Verified Nudge)
   /**

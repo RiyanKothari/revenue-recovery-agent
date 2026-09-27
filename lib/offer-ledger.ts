@@ -52,6 +52,21 @@ export interface OfferRecord {
   /** Normalised to a percentage so flat and percentage offers compare. */
   discountPercent: number;
   /**
+   * Whether this customer received the favourable treatment, when that is
+   * not a question about a discount.
+   *
+   * Some agents decide how much to give. Others decide whether to act at all,
+   * and for those the fairness question is "was this person helped", which
+   * has nothing to do with a percentage. A recovery agent that contacts card
+   * users and skips UPI users is discriminating just as surely as one that
+   * offers them less money, and forcing that through `discountPercent` would
+   * mean recording a zero for everyone and auditing a column that never
+   * varies.
+   *
+   * Left undefined for offer-based agents, where the discount IS the answer.
+   */
+  favourable?: boolean;
+  /**
    * Which agent decided this, or null when a human or a static rule did.
    *
    * Null is not missing data. It is the control group: merchants in the same
@@ -91,6 +106,10 @@ export const FAVOURABLE_DISCOUNT_PERCENT = 10;
  * trustworthy choice.
  */
 export function isFavourable(offer: OfferRecord, threshold = FAVOURABLE_DISCOUNT_PERCENT): boolean {
+  // An explicit flag wins, because an agent that records one is telling us
+  // its decision was not about money. Falling back to the discount keeps
+  // every offer-based caller unchanged.
+  if (offer.favourable !== undefined) return offer.favourable;
   return offer.discountPercent >= threshold;
 }
 

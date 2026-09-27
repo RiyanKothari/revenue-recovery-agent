@@ -7,6 +7,7 @@ import type {
   AttemptReservation,
   DispatchResult,
   DueAction,
+  DecisionFactRow,
   DecisionRow,
   InsertResult,
   NudgeVerificationInsert,
@@ -455,6 +456,54 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           update.executed_at,
         ]
       );
+    },
+
+    async listDecisionFacts(limit?: number) {
+      /**
+       * `exists` rather than a join, because a customer with two recovery
+       * actions must count once. A join would duplicate their row and let a
+       * segment that happened to be retried more often look as though it
+       * contained more people.
+       *
+       * Statuses are listed explicitly: `sent`, `scheduled` and `simulated`
+       * all mean the pipeline committed to reaching this person, and
+       * `scheduled` counts because a message queued for 7pm is a contact for
+       * every purpose the guardrails already use. `failed` and
+       * `skipped_guardrail` do not count — nobody was reached.
+       */
+      const rows = await query<any>(
+        `select e.id as revenue_event_id,
+                e.customer_id,
+                e.amount_paise,
+                e.payment_method,
+                e.root_cause,
+                coalesce(d.decided_at, e.received_at) as decided_at,
+                a.policy_version,
+                exists (
+                  select 1
+                    from recovery_actions ra
+                    join agent_decisions ad on ad.id = ra.agent_decision_id
+                   where ad.revenue_event_id = e.id
+                     and ra.status in ('sent', 'scheduled', 'simulated')
+                ) as contacted
+           from revenue_events e
+           left join agent_decisions d on d.revenue_event_id = e.id
+           left join experiment_assignments a on a.revenue_event_id = e.id
+          order by e.received_at asc
+          ${limit ? "limit $1" : ""}`,
+        limit ? [limit] : []
+      );
+
+      return rows.map((row) => ({
+        revenue_event_id: row.revenue_event_id,
+        customer_id: row.customer_id,
+        amount_paise: Number(row.amount_paise),
+        payment_method: row.payment_method,
+        root_cause: row.root_cause,
+        decided_at: iso(row.decided_at),
+        contacted: Boolean(row.contacted),
+        policy_version: row.policy_version,
+      }));
     },
 
     async issueNudgeVerification(row: NudgeVerificationInsert): Promise<InsertResult> {

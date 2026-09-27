@@ -988,3 +988,52 @@ forEachDriver("a code nobody issued is null, not an empty row", async (db, drive
   const missing = await db.reserveVerificationAttempt("ZZZZ9999", 5);
   assert.equal(missing, null, driver);
 });
+
+forEachDriver("decision facts are derived from what the pipeline already wrote", async (db, driver) => {
+  /**
+   * The fairness audit reads these rather than a separate ledger. A second
+   * table would need a migration, a backfill and a writer that could drift
+   * from the truth it claims to describe; this cannot drift, because it is
+   * assembled from the same rows the dashboard and the conformance verifier
+   * read.
+   */
+  const id = await newEvent(db, "df1");
+
+  const before = await db.listDecisionFacts();
+  const mine = before.find((f) => f.revenue_event_id === id);
+  assert.ok(mine, `${driver}: a freshly written event appears`);
+  assert.equal(mine!.contacted, false, `${driver}: nothing has contacted anyone yet`);
+  assert.equal(typeof mine!.amount_paise, "number", `${driver}: paise survive as a number`);
+
+  // Record a decision and a send, then the same event must read as contacted.
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "sent",
+    attempt_number: 1,
+  });
+
+  const after = await db.listDecisionFacts();
+  const updated = after.find((f) => f.revenue_event_id === id);
+  assert.equal(updated!.contacted, true, `${driver}: a sent action counts as contact`);
+
+  // One row per event, however many actions it accumulated — a join would
+  // duplicate the customer and inflate whichever segment retried most.
+  assert.equal(
+    after.filter((f) => f.revenue_event_id === id).length,
+    1,
+    `${driver}: still exactly one row for this event`
+  );
+
+  const bounded = await db.listDecisionFacts(2);
+  assert.ok(bounded.length <= 2, `${driver}: the bound is honoured`);
+});
