@@ -195,6 +195,39 @@ export interface DeliveryStatusUpdate {
   error?: string | null;
 }
 
+/**
+ * The binding between an outbound recovery message and the genuine failed
+ * payment it answers — see lib/nudge-verification.ts for why this exists.
+ *
+ * Stored rather than derived at check time because the check must be
+ * answerable without recomputing anything from the event: the code is an
+ * index, and what is being asserted is the state of the world at the moment
+ * the message went out, not today's.
+ */
+export interface NudgeVerificationInsert {
+  code: string;
+  revenue_event_id: string;
+  merchant_name: string;
+  amount_paise: number;
+  failed_at: string;
+  expires_at: string;
+}
+
+export interface NudgeVerificationRow extends NudgeVerificationInsert {
+  /** Wrong amounts supplied against this code so far. */
+  attempts: number;
+}
+
+/**
+ * The outcome of trying to take one of a code's limited attempts.
+ *
+ * `null` means no such code. `reserved: false` means the code exists and its
+ * attempts are spent. The two are kept distinct because the caller has to
+ * tell them apart to answer correctly, and collapsing them would make a
+ * locked code indistinguishable from one that was never issued.
+ */
+export type AttemptReservation = { row: NudgeVerificationRow; reserved: boolean } | null;
+
 export interface DispatchResult {
   action_id: string;
   status: string;
@@ -402,6 +435,37 @@ export interface RecoveryDb {
   claimDueAction(actionId: string, nowIso: string): Promise<boolean>;
   /** Records how a dispatched send actually went. */
   completeDueAction(update: DispatchResult): Promise<void>;
+
+  // --- message authentication (Verified Nudge)
+  /**
+   * Binds a code to one genuine failed payment, at most once per event.
+   *
+   * Duplicates are reported rather than thrown, for the usual reason: a
+   * webhook redelivery must not be an error, and the code is derived
+   * deterministically from the event, so the second attempt is writing the
+   * same row.
+   */
+  issueNudgeVerification(row: NudgeVerificationInsert): Promise<InsertResult>;
+  /**
+   * Takes one of a code's attempts, atomically, and returns the row.
+   *
+   * The increment happens BEFORE the amount is compared, and is undone by
+   * `refundVerificationAttempt` when the answer turns out to be correct.
+   * Reading the count, deciding, and then writing it back would be the same
+   * read-then-write that once produced two payment links four seconds apart:
+   * concurrent guesses would both read the last remaining attempt and both be
+   * allowed to use it, so the cap on guessing would not be a cap. Only a
+   * conditional update in one statement closes that.
+   *
+   * `attempts` on the returned row is the value AFTER the increment.
+   */
+  reserveVerificationAttempt(code: string, cap: number): Promise<AttemptReservation>;
+  /**
+   * Gives back an attempt taken by a reservation that turned out to be a
+   * correct answer. A customer re-checking the same message is not an attack
+   * and must not be able to lock themselves out by doing it.
+   */
+  refundVerificationAttempt(code: string): Promise<void>;
 
   // --- rate limiting
   /**

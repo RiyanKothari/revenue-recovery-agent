@@ -204,3 +204,37 @@ alter table recovery_actions add column if not exists dispatched_at timestamptz;
 create index if not exists idx_recovery_actions_due
   on recovery_actions(scheduled_for)
   where scheduled_for is not null and dispatched_at is null;
+
+-- Binds an outbound recovery message to the genuine failed payment it
+-- answers, so the customer can check it. See lib/nudge-verification.ts.
+--
+-- Automated failed-payment recovery, done at scale by anyone, makes "your
+-- payment failed, tap here to pay" an ordinary message for millions of
+-- people. That is exactly the template a phisher wants, and the recovery
+-- industry is what made it unremarkable. Every defence normally offered is
+-- merchant-side, and none of it helps the person holding the phone, because a
+-- genuine-looking payment link proves nothing: anyone can open a gateway
+-- account and generate real links on a real gateway domain.
+--
+-- What a scammer cannot copy is the EVENT. So the check is a challenge, not a
+-- lookup: the customer supplies the amount they tried to pay and this table
+-- only ever confirms or denies it. Storing the details and showing them on
+-- the code alone would build the oracle an attacker needs to write the next,
+-- far more convincing, phishing message.
+--
+-- `attempts` is therefore load-bearing, not bookkeeping. Without a cap the
+-- challenge degrades into a guessing game over a small space of plausible
+-- cart values.
+create table if not exists nudge_verifications (
+  code text primary key,
+  -- unique: one code per failed payment. The code is derived
+  -- deterministically from the event, so a webhook redelivery writes the same
+  -- row rather than issuing a second code for the same message.
+  revenue_event_id uuid references revenue_events(id) not null unique,
+  merchant_name text not null,
+  amount_paise bigint not null,
+  failed_at timestamptz not null,
+  expires_at timestamptz not null,
+  attempts int not null default 0,
+  created_at timestamptz not null default now()
+);

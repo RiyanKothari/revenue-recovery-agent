@@ -57,6 +57,9 @@ function fakes(
     async countLiveLinks() {
       return 0;
     },
+    async issueNudgeVerification() {
+      return { id: "code" };
+    },
   };
 
   return {
@@ -69,6 +72,10 @@ function fakes(
       audit: async (eventId: string, stage: string, detail: any) => {
         audits.push({ eventId, stage, detail });
       },
+      // Pinned. The real issuer reads process.env, and a test whose result
+      // depends on the environment it runs in is the defect this file already
+      // fixed once for the clock.
+      issueVerification: async () => ({ code: "ABCD1234", url: "https://example.test/verify" }),
     },
   };
 }

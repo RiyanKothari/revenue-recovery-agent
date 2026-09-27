@@ -5,10 +5,13 @@ import type {
   AuditRow,
   DecisionInsert,
   DeliveryStatusUpdate,
+  AttemptReservation,
   DispatchResult,
   DueAction,
   DecisionRow,
   InsertResult,
+  NudgeVerificationInsert,
+  NudgeVerificationRow,
   OutcomeInsert,
   RecoveryActionInsert,
   RecoveryActionRow,
@@ -50,6 +53,7 @@ const TABLES = [
   "audit_log",
   "experiment_assignments",
   "decision_cache",
+  "nudge_verifications",
   // Not written by the pipeline, but preflight should fail loudly on a
   // database that predates it: a missing table here means the shared rate
   // limiter silently degrades to a per-instance counter.
@@ -65,6 +69,20 @@ function iso(value: unknown): string {
 function isoOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return iso(value);
+}
+
+/** `bigint` can arrive as a string, and `amount_paise` is compared for exact
+ *  equality — so it has to be a number before it leaves this layer. */
+function toVerificationRow(row: any): NudgeVerificationRow {
+  return {
+    code: row.code,
+    revenue_event_id: row.revenue_event_id,
+    merchant_name: row.merchant_name,
+    amount_paise: Number(row.amount_paise),
+    failed_at: iso(row.failed_at),
+    expires_at: iso(row.expires_at),
+    attempts: Number(row.attempts),
+  };
 }
 
 /** MySQL has no boolean type — TINYINT(1) arrives as 0/1. */
@@ -480,6 +498,81 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           toMysqlDatetime(update.executed_at),
           update.action_id,
         ]
+      );
+    },
+
+    async issueNudgeVerification(row: NudgeVerificationInsert): Promise<InsertResult> {
+      try {
+        await exec(
+          `insert into nudge_verifications
+             (code, revenue_event_id, merchant_name, amount_paise, failed_at, expires_at)
+           values (?, ?, ?, ?, ?, ?)`,
+          [
+            row.code,
+            row.revenue_event_id,
+            row.merchant_name,
+            row.amount_paise,
+            toMysqlDatetime(row.failed_at),
+            toMysqlDatetime(row.expires_at),
+          ]
+        );
+        return { id: row.code };
+      } catch (err: any) {
+        if (err?.errno === DUPLICATE_ENTRY) return { duplicate: true };
+        throw err;
+      }
+    },
+
+    async reserveVerificationAttempt(code: string, cap: number): Promise<AttemptReservation> {
+      /**
+       * `attempts < ?` in the WHERE clause is the lock, exactly as in the
+       * Postgres implementation: of two concurrent guesses at the last
+       * remaining attempt, only one update can match.
+       *
+       * The read back is a second statement because MySQL has no RETURNING,
+       * so a concurrent guess can land between them and the `attempts` value
+       * read here can be HIGHER than this request's own. It can never be
+       * lower, so the count shown to the customer errs toward saying they
+       * have fewer tries left than they do. Under contention that is the
+       * direction to be wrong in, and the gate itself — whether an attempt
+       * was available at all — was already decided atomically by the update.
+       */
+      const conn = await pool.getConnection();
+      try {
+        const [result] = await conn.execute(
+          `update nudge_verifications
+              set attempts = attempts + 1
+            where code = ? and attempts < ?`,
+          [code, cap]
+        );
+
+        const [rows] = await conn.query(
+          `select code, revenue_event_id, merchant_name, amount_paise,
+                  failed_at, expires_at, attempts
+             from nudge_verifications where code = ?`,
+          [code]
+        );
+
+        const found = (rows as any[])[0];
+        if (!found) return null;
+
+        return {
+          row: toVerificationRow(found),
+          reserved: (result as any).affectedRows > 0,
+        };
+      } finally {
+        conn.release();
+      }
+    },
+
+    async refundVerificationAttempt(code: string) {
+      // `greatest(0, ...)` rather than a bare decrement: a refund that ran
+      // twice must not hand out an attempt that was never taken.
+      await exec(
+        `update nudge_verifications
+            set attempts = greatest(0, attempts - 1)
+          where code = ?`,
+        [code]
       );
     },
 

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildBodyParameters,
   describeMetaError,
   isDryRun,
   isSyntheticNumber,
@@ -234,5 +235,69 @@ test("Meta's own status is carried through, not rounded up to delivered", async 
     assert.equal(result.status, "accepted", "Meta's word, not ours");
   } finally {
     (globalThis as any).fetch = realFetch;
+  }
+});
+
+// --- Verified Nudge in the template
+
+test("the template gets exactly the two variables it was approved with", () => {
+  /**
+   * Meta rejects the whole message when the parameter count does not match
+   * the approved template, with error 132000, and that error names neither
+   * the template nor the count. A mismatch presents as "sending stopped
+   * working", so the default has to be the safe one: two variables, exactly
+   * as today's approved template declares.
+   */
+  const params = buildBodyParameters({
+    amountRupees: 2499,
+    paymentLinkUrl: "https://rzp.io/l/abc",
+    verification: { code: "ABCD1234", url: "https://example.test/verify" },
+  });
+
+  assert.equal(params.length, 2, "a third variable needs a Meta approval, not a code change");
+  assert.equal(params[0].text, "₹2499.00");
+  assert.equal(params[1].text, "https://rzp.io/l/abc");
+});
+
+test("the code is added only once the approved template has a slot for it", () => {
+  const previous = process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE;
+  process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE = "true";
+
+  try {
+    const params = buildBodyParameters({
+      amountRupees: 2499,
+      paymentLinkUrl: "https://rzp.io/l/abc",
+      verification: { code: "ABCD1234", url: "https://example.test/verify" },
+    });
+
+    assert.equal(params.length, 3);
+    // Grouped, because eight unbroken characters get misread off a phone.
+    assert.match(params[2].text, /ABCD-1234/);
+    assert.match(params[2].text, /https:\/\/example\.test\/verify/);
+  } finally {
+    if (previous === undefined) delete process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE;
+    else process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE = previous;
+  }
+});
+
+test("no code means no third variable, even when the template has room", () => {
+  /**
+   * The degradation path. When the challenge could not be recorded the
+   * message must go out with nothing rather than with a code the store never
+   * saw — a customer who checks that code is told their genuine message is
+   * unrecognised, which is worse than not offering the check at all.
+   */
+  const previous = process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE;
+  process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE = "true";
+
+  try {
+    const params = buildBodyParameters({
+      amountRupees: 2499,
+      paymentLinkUrl: "https://rzp.io/l/abc",
+    });
+    assert.equal(params.length, 2);
+  } finally {
+    if (previous === undefined) delete process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE;
+    else process.env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE = previous;
   }
 });

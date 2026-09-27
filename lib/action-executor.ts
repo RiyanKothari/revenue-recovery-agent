@@ -10,6 +10,7 @@ import {
   seedLinkBudget,
 } from "./link-budget";
 import { resolveSendWindow } from "./send-window";
+import { issueVerification } from "./nudge-verify-service";
 
 /**
  * Turns an agent decision into a real action. This is where "detects
@@ -23,7 +24,10 @@ import { resolveSendWindow } from "./send-window";
  * disabling the read path's safety rules.
  */
 
-export type ExecutorDb = Pick<RecoveryDb, "insertRecoveryAction" | "countLiveLinks">;
+export type ExecutorDb = Pick<
+  RecoveryDb,
+  "insertRecoveryAction" | "countLiveLinks" | "issueNudgeVerification"
+>;
 
 export interface ExecutorDeps {
   db: ExecutorDb;
@@ -41,6 +45,12 @@ export interface ExecutorDeps {
    * reads the clock is a test whose result depends on when you run it.
    */
   resolveWindow: typeof resolveSendWindow;
+  /**
+   * Issues the Verified Nudge challenge. Injected so a test can assert what
+   * the message carried without a store, and so a failure to issue is visibly
+   * a decision this function makes rather than one buried in a helper.
+   */
+  issueVerification: typeof issueVerification;
 }
 
 /** Resolved per call, not at module scope: getDb() throws without a
@@ -52,6 +62,7 @@ function resolveDeps(overrides: Partial<ExecutorDeps>): ExecutorDeps {
     sendWhatsApp: overrides.sendWhatsApp ?? sendWhatsAppRetryNudge,
     audit: overrides.audit ?? logAudit,
     resolveWindow: overrides.resolveWindow ?? resolveSendWindow,
+    issueVerification: overrides.issueVerification ?? issueVerification,
   };
 }
 
@@ -78,7 +89,8 @@ export async function executeAction(
   },
   deps: Partial<ExecutorDeps> = {}
 ) {
-  const { db, createLink, sendWhatsApp, audit, resolveWindow } = resolveDeps(deps);
+  const { db, createLink, sendWhatsApp, audit, resolveWindow, issueVerification: issue } =
+    resolveDeps(deps);
   const { decision, revenueEventId, agentDecisionId, eventTimeIso } = params;
 
   /**
@@ -216,6 +228,8 @@ export async function executeAction(
           status: "simulated",
         };
 
+    let verification: { code: string; url: string } | null = null;
+
     let deliveryResult: {
       success: boolean;
       error?: string;
@@ -224,10 +238,29 @@ export async function executeAction(
     } = { success: true };
 
     if (channel === "whatsapp" && live) {
+      /**
+       * Bound to the failure it answers before it goes out — see
+       * lib/nudge-verification.ts.
+       *
+       * Null when the challenge could not be recorded, and the message then
+       * goes without one. A code the store never saw would tell a customer
+       * doing exactly the right thing that their genuine message is fake,
+       * which is worse than no code at all.
+       */
+      verification = await issue(
+        {
+          revenueEventId,
+          amountPaise: params.amountPaise,
+          failedAtIso: eventTimeIso ?? new Date().toISOString(),
+        },
+        { db }
+      );
+
       deliveryResult = await sendWhatsApp({
         toPhoneE164: params.customerContact,
         paymentLinkUrl: link.shortUrl,
         amountRupees: params.amountPaise / 100,
+        verification: verification ?? undefined,
       });
     }
     // email delivery is already handled by the MCP server's `notify.email` flag
@@ -268,6 +301,13 @@ export async function executeAction(
       // pipeline still runs end to end, and the record says so rather than
       // implying a link that does not exist.
       link_source: live ? "razorpay_mcp" : "simulated",
+      /**
+       * Whether this message can be checked by the person who received it.
+       * Recorded as a fact about the message rather than inferred later: a
+       * support agent looking at a disputed message needs to know whether it
+       * carried a challenge, and false here is a real state, not missing data.
+       */
+      verification_issued: verification !== null,
     });
   } catch (err: any) {
     // A failure to RECORD is already fully logged and must keep propagating —

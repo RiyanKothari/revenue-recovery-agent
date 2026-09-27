@@ -1,3 +1,5 @@
+import { formatCode } from "./nudge-verification";
+
 /**
  * Meta's WhatsApp Cloud API, for the one message this system sends.
  *
@@ -87,10 +89,63 @@ export interface SendResult {
   error?: string;
 }
 
+/**
+ * The template's body variables, in the order the approved template declares
+ * them.
+ *
+ * Kept as a function so the count is decided in one place. Meta rejects the
+ * whole message when the number of parameters does not match the approved
+ * template, and that error names neither the template nor the count, so a
+ * mismatch presents as "sending stopped working".
+ */
+export function buildBodyParameters(params: {
+  amountRupees: number;
+  paymentLinkUrl: string;
+  verification?: { code: string; url: string };
+}): { type: "text"; text: string }[] {
+  const parameters: { type: "text"; text: string }[] = [
+    { type: "text", text: `₹${params.amountRupees.toFixed(2)}` },
+    { type: "text", text: params.paymentLinkUrl },
+  ];
+
+  if (params.verification && templateCarriesVerifyCode()) {
+    parameters.push({
+      type: "text",
+      text: `${formatCode(params.verification.code)} · ${params.verification.url}`,
+    });
+  }
+
+  return parameters;
+}
+
+/**
+ * Whether the approved template has a third body variable for the
+ * verification code.
+ *
+ * This is a Meta approval, not a code change. A template approved with two
+ * variables rejects a third with error 132000, and re-approval takes hours,
+ * so the code ships ready and the deployment turns it on once the template
+ * is live. Default off, because the failure mode of guessing wrong here is
+ * that every recovery message stops sending.
+ *
+ * The verification record is written either way, so the code is checkable on
+ * the verify page from the moment it is issued. What this flag controls is
+ * only whether the customer is told the code in the message itself.
+ */
+export function templateCarriesVerifyCode(env = process.env): boolean {
+  return env.WHATSAPP_TEMPLATE_VERIFY_VARIABLE?.trim().toLowerCase() === "true";
+}
+
 export async function sendWhatsAppRetryNudge(params: {
   toPhoneE164: string;
   paymentLinkUrl: string;
   amountRupees: number;
+  /**
+   * The Verified Nudge challenge for this payment — see
+   * lib/nudge-verification.ts. Present whenever a code was issued; whether it
+   * reaches the customer depends on the approved template.
+   */
+  verification?: { code: string; url: string };
 }): Promise<SendResult> {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
@@ -156,10 +211,7 @@ export async function sendWhatsAppRetryNudge(params: {
           components: [
             {
               type: "body",
-              parameters: [
-                { type: "text", text: `₹${params.amountRupees.toFixed(2)}` },
-                { type: "text", text: params.paymentLinkUrl },
-              ],
+              parameters: buildBodyParameters(params),
             },
           ],
         },

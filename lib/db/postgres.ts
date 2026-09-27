@@ -4,10 +4,13 @@ import type {
   AuditRow,
   DecisionInsert,
   DeliveryStatusUpdate,
+  AttemptReservation,
   DispatchResult,
   DueAction,
   DecisionRow,
   InsertResult,
+  NudgeVerificationInsert,
+  NudgeVerificationRow,
   OutcomeInsert,
   RecoveryActionInsert,
   RecoveryActionRow,
@@ -39,6 +42,7 @@ const TABLES = [
   "audit_log",
   "experiment_assignments",
   "decision_cache",
+  "nudge_verifications",
   // Not written by the pipeline, but preflight should fail loudly on a
   // database that predates it: a missing table here means the shared rate
   // limiter silently degrades to a per-instance counter.
@@ -54,6 +58,20 @@ function iso(value: unknown): string {
 function isoOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return iso(value);
+}
+
+/** `bigint` arrives as a string from `pg`, and `amount_paise` is compared for
+ *  exact equality — so it has to be a number before it leaves this layer. */
+function toVerificationRow(row: any): NudgeVerificationRow {
+  return {
+    code: row.code,
+    revenue_event_id: row.revenue_event_id,
+    merchant_name: row.merchant_name,
+    amount_paise: Number(row.amount_paise),
+    failed_at: iso(row.failed_at),
+    expires_at: iso(row.expires_at),
+    attempts: Number(row.attempts),
+  };
 }
 
 export function createPostgresDb(connectionString: string): RecoveryDb {
@@ -436,6 +454,72 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           update.delivery_state ?? null,
           update.executed_at,
         ]
+      );
+    },
+
+    async issueNudgeVerification(row: NudgeVerificationInsert): Promise<InsertResult> {
+      try {
+        const rows = await query<any>(
+          `insert into nudge_verifications
+             (code, revenue_event_id, merchant_name, amount_paise, failed_at, expires_at)
+           values ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz)
+           returning code`,
+          [
+            row.code,
+            row.revenue_event_id,
+            row.merchant_name,
+            row.amount_paise,
+            row.failed_at,
+            row.expires_at,
+          ]
+        );
+        return { id: rows[0].code };
+      } catch (err: any) {
+        if (err?.code === UNIQUE_VIOLATION) return { duplicate: true };
+        throw err;
+      }
+    },
+
+    async reserveVerificationAttempt(code: string, cap: number): Promise<AttemptReservation> {
+      /**
+       * The WHERE clause is the lock. `attempts < $2` means exactly one of
+       * two concurrent guesses at the last remaining attempt can match, and
+       * the loser gets zero rows rather than a second use of the same
+       * attempt.
+       */
+      const claimed = await query<any>(
+        `update nudge_verifications
+            set attempts = attempts + 1
+          where code = $1 and attempts < $2
+          returning code, revenue_event_id, merchant_name, amount_paise,
+                    failed_at, expires_at, attempts`,
+        [code, cap]
+      );
+
+      if (claimed.length > 0) return { row: toVerificationRow(claimed[0]), reserved: true };
+
+      // No attempt was taken. Either the code does not exist or it is spent,
+      // and the caller must be able to tell those apart.
+      const existing = await query<any>(
+        `select code, revenue_event_id, merchant_name, amount_paise,
+                failed_at, expires_at, attempts
+           from nudge_verifications where code = $1`,
+        [code]
+      );
+
+      if (existing.length === 0) return null;
+      return { row: toVerificationRow(existing[0]), reserved: false };
+    },
+
+    async refundVerificationAttempt(code: string) {
+      // `greatest(0, ...)` rather than a bare decrement: a refund that ran
+      // twice for any reason must not hand out an attempt that was never
+      // taken.
+      await query(
+        `update nudge_verifications
+            set attempts = greatest(0, attempts - 1)
+          where code = $1`,
+        [code]
       );
     },
 

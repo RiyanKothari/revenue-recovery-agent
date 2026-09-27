@@ -15,7 +15,11 @@ interface Recorded {
   inserts: Record<string, unknown>[];
   audits: { stage: string; detail: Record<string, unknown> }[];
   linksCreated: number;
-  whatsappSends: { toPhoneE164: string; paymentLinkUrl: string }[];
+  whatsappSends: {
+    toPhoneE164: string;
+    paymentLinkUrl: string;
+    verification?: { code: string; url: string };
+  }[];
 }
 
 beforeEach(() => resetLinkBudget());
@@ -24,6 +28,7 @@ function harness(overrides: {
   insertError?: { message: string };
   createLink?: ExecutorDeps["createLink"];
   sendWhatsApp?: ExecutorDeps["sendWhatsApp"];
+  issueVerification?: ExecutorDeps["issueVerification"];
 } = {}) {
   const recorded: Recorded = {
     inserts: [],
@@ -44,6 +49,15 @@ function harness(overrides: {
      * send-window.test.ts, where the clock is an argument rather than ambient.
      */
     resolveWindow: () => ({ scheduledFor: null, reason: "immediate" }),
+    /**
+     * Pinned for the same reason as the clock. The real issuer reads
+     * APP_BASE_URL and MERCHANT_NAME from the environment, so leaving it
+     * ambient would make these tests pass or fail depending on whose machine
+     * they run on.
+     */
+    issueVerification:
+      overrides.issueVerification ??
+      (async () => ({ code: "ABCD1234", url: "https://example.test/verify" })),
     db: {
       // No live links recorded, so the test-mode link budget is untouched
       // and every action in these tests takes the real MCP path.
@@ -246,4 +260,45 @@ test("a deferred window records the action but sends nothing", async () => {
   assert.equal(recorded.inserts.length, 1, "but the action IS recorded");
   assert.equal(recorded.inserts[0].status, "scheduled");
   assert.equal(recorded.inserts[0].scheduled_for, "2026-09-06T13:30:00.000Z");
+});
+
+
+// --- Verified Nudge
+
+test("a live message carries the challenge for the payment it answers", async () => {
+  const { recorded, deps } = harness();
+
+  await executeAction({ ...baseParams, decision: decision("send_retry_link_whatsapp") }, deps);
+
+  assert.deepEqual(recorded.whatsappSends[0].verification, {
+    code: "ABCD1234",
+    url: "https://example.test/verify",
+  });
+
+  const executed = recorded.audits.find((a) => a.stage === "action_executed");
+  // A fact about the message, not an inference to be made later. A support
+  // agent looking at a disputed message needs to know whether it was
+  // checkable, and false is a real state rather than missing data.
+  assert.equal(executed?.detail.verification_issued, true);
+});
+
+test("a message goes out without a code rather than with an uncheckable one", async () => {
+  /**
+   * The direction of this degradation is the whole point.
+   *
+   * No code means the message is exactly as unverifiable as every recovery
+   * message in the industry already is — nothing is worse than before. A code
+   * the store never recorded would be actively harmful: the customer does the
+   * responsible thing, checks it, and is told their genuine message is
+   * unrecognised, which teaches them to ignore the one signal that works.
+   */
+  const { recorded, deps } = harness({ issueVerification: async () => null });
+
+  await executeAction({ ...baseParams, decision: decision("send_retry_link_whatsapp") }, deps);
+
+  assert.equal(recorded.whatsappSends.length, 1, "the message still went out");
+  assert.equal(recorded.whatsappSends[0].verification, undefined);
+
+  const executed = recorded.audits.find((a) => a.stage === "action_executed");
+  assert.equal(executed?.detail.verification_issued, false);
 });

@@ -187,3 +187,25 @@ alter table recovery_actions add column dispatched_at datetime(3);
 -- columns instead of a predicate.
 create index idx_recovery_actions_due
   on recovery_actions(scheduled_for, dispatched_at);
+
+-- Binds an outbound recovery message to the genuine failed payment it
+-- answers, so the customer can check it. See the long note in
+-- schema.postgres.sql for why this is a challenge and not a lookup: showing
+-- the payment details on the code alone would build the oracle an attacker
+-- needs to write the next, far more convincing, phishing message.
+--
+-- `attempts` is load-bearing, not bookkeeping. Without a cap the challenge
+-- degrades into a guessing game over a small space of plausible cart values.
+create table if not exists nudge_verifications (
+  code varchar(32) primary key,
+  -- unique: one code per failed payment. The code is derived
+  -- deterministically from the event, so a webhook redelivery writes the same
+  -- row rather than issuing a second code for the same message.
+  revenue_event_id char(36) not null unique,
+  merchant_name varchar(191) not null,
+  amount_paise bigint not null,
+  failed_at datetime(3) not null,
+  expires_at datetime(3) not null,
+  attempts int not null default 0,
+  created_at datetime(3) not null default current_timestamp(3)
+) engine=InnoDB;

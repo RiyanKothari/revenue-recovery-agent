@@ -4,6 +4,7 @@ import { createAndSendRetryLink } from "./razorpay-mcp-client";
 import { sendWhatsAppRetryNudge } from "./whatsapp";
 import { claimLinkBudget, seedLinkBudget } from "./link-budget";
 import { inQuietHours } from "./send-window";
+import { issueVerification } from "./nudge-verify-service";
 
 /**
  * Sends what was scheduled earlier.
@@ -25,7 +26,11 @@ import { inQuietHours } from "./send-window";
 
 export type DispatcherDb = Pick<
   RecoveryDb,
-  "listDueActions" | "claimDueAction" | "completeDueAction" | "countLiveLinks"
+  | "listDueActions"
+  | "claimDueAction"
+  | "completeDueAction"
+  | "countLiveLinks"
+  | "issueNudgeVerification"
 >;
 
 export interface DispatcherDeps {
@@ -34,6 +39,13 @@ export interface DispatcherDeps {
   sendWhatsApp: typeof sendWhatsAppRetryNudge;
   audit: typeof logAudit;
   now: () => Date;
+  /**
+   * Issues the Verified Nudge challenge, exactly as the immediate send path
+   * does. A scheduled message is no less impersonable than a prompt one, and
+   * a customer who receives a checkable message at 2pm and an uncheckable one
+   * at 7pm has been taught that the check means nothing.
+   */
+  issueVerification: typeof issueVerification;
 }
 
 function resolveDeps(overrides: Partial<DispatcherDeps>): DispatcherDeps {
@@ -43,6 +55,7 @@ function resolveDeps(overrides: Partial<DispatcherDeps>): DispatcherDeps {
     sendWhatsApp: overrides.sendWhatsApp ?? sendWhatsAppRetryNudge,
     audit: overrides.audit ?? logAudit,
     now: overrides.now ?? (() => new Date()),
+    issueVerification: overrides.issueVerification ?? issueVerification,
   };
 }
 
@@ -70,7 +83,8 @@ export async function dispatchDueActions(
   overrides: Partial<DispatcherDeps> = {},
   batchSize = 25
 ): Promise<DispatchSummary> {
-  const { db, createLink, sendWhatsApp, audit, now } = resolveDeps(overrides);
+  const { db, createLink, sendWhatsApp, audit, now, issueVerification: issue } =
+    resolveDeps(overrides);
 
   const at = now();
   const nowIso = at.toISOString();
@@ -135,10 +149,24 @@ export async function dispatchDueActions(
       };
 
       if (action.channel === "whatsapp" && live) {
+        // Bound to the failure it answers, on the same terms as an immediate
+        // send: null means the challenge could not be recorded, and the
+        // message then goes without a code rather than with one that would
+        // fail the customer's check.
+        const verification = await issue(
+          {
+            revenueEventId: action.revenue_event_id,
+            amountPaise: action.amount_paise,
+            failedAtIso: action.scheduled_for,
+          },
+          { db }
+        );
+
         delivery = await sendWhatsApp({
           toPhoneE164: action.customer_contact ?? "",
           paymentLinkUrl: link.shortUrl,
           amountRupees: action.amount_paise / 100,
+          verification: verification ?? undefined,
         });
       }
 

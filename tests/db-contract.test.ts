@@ -906,3 +906,85 @@ forEachDriver("events can be counted without being loaded", async (db, driver) =
   const unbounded = await db.listEvents();
   assert.equal(unbounded.length, total, `${driver}: the count matches the full read`);
 });
+
+// --- Verified Nudge
+
+forEachDriver("a verification code binds to one payment, and a redelivery is not a second code", async (db, driver) => {
+  const id = await newEvent(db, "nv1");
+  const code = `NV${RUN.slice(-6).toUpperCase()}`;
+
+  const first = await db.issueNudgeVerification({
+    code,
+    revenue_event_id: id,
+    merchant_name: "Kettle & Co",
+    amount_paise: 249900,
+    failed_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 72 * 60 * 60_000).toISOString(),
+  });
+  assert.ok("id" in first, `${driver}: the first issue succeeds`);
+
+  /**
+   * The code is derived from the event, so a webhook redelivery writes the
+   * same row. Reported rather than thrown, as with every other duplicate in
+   * this contract — a retry is ordinary traffic, and the row it collides with
+   * is the one that makes the code checkable.
+   */
+  const again = await db.issueNudgeVerification({
+    code,
+    revenue_event_id: id,
+    merchant_name: "Kettle & Co",
+    amount_paise: 249900,
+    failed_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 72 * 60 * 60_000).toISOString(),
+  });
+  assert.deepEqual(again, { duplicate: true }, `${driver}: a redelivery does not issue a second code`);
+});
+
+forEachDriver("attempts are spent atomically and stop at the cap", async (db, driver) => {
+  /**
+   * The cap is the only thing standing between the challenge and a guessing
+   * game over a small space of plausible cart values, so it has to hold in the
+   * database rather than in the application. A read, a decision and a write
+   * back is the same shape that once let two concurrent redeliveries both pass
+   * an idempotency check and send one customer two payment links.
+   */
+  const id = await newEvent(db, "nv2");
+  const code = `NW${RUN.slice(-6).toUpperCase()}`;
+  const cap = 3;
+
+  await db.issueNudgeVerification({
+    code,
+    revenue_event_id: id,
+    merchant_name: "Kettle & Co",
+    amount_paise: 189900,
+    failed_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 72 * 60 * 60_000).toISOString(),
+  });
+
+  // Fired together on purpose. Run sequentially this passes even on a
+  // read-then-write implementation, which is exactly how the original
+  // double-send bug survived its own test.
+  const burst = await Promise.all(
+    Array.from({ length: 6 }, () => db.reserveVerificationAttempt(code, cap))
+  );
+
+  const taken = burst.filter((r) => r?.reserved).length;
+  assert.equal(taken, cap, `${driver}: exactly ${cap} attempts exist, however many ask at once`);
+
+  const spent = await db.reserveVerificationAttempt(code, cap);
+  assert.equal(spent?.reserved, false, `${driver}: a spent code still exists, it just stops answering`);
+  assert.equal(spent?.row.amount_paise, 189900, `${driver}: paise survive the round trip as a number`);
+
+  // Correct answers give the attempt back, or a customer re-checking a
+  // message they already verified could lock themselves out by being careful.
+  await db.refundVerificationAttempt(code);
+  const afterRefund = await db.reserveVerificationAttempt(code, cap);
+  assert.equal(afterRefund?.reserved, true, `${driver}: a refunded attempt is usable again`);
+});
+
+forEachDriver("a code nobody issued is null, not an empty row", async (db, driver) => {
+  // The route has to tell "no such code" from "code exists but is spent", and
+  // collapsing them would make a locked code look like one never sent.
+  const missing = await db.reserveVerificationAttempt("ZZZZ9999", 5);
+  assert.equal(missing, null, driver);
+});
