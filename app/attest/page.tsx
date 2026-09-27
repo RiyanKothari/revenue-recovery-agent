@@ -6,6 +6,7 @@ import {
   FAIRNESS_SCENARIOS,
   NUDGE_FIXTURES,
   NUDGE_SCENARIOS,
+  REALITY_SCENARIOS,
   SENTINEL_CLAIMS,
   SENTINEL_CONFIGS,
   SENTINEL_MESSAGE,
@@ -16,6 +17,7 @@ import { verifyNudge } from "@/lib/nudge-verify-service";
 import { screenMessage, type AdjudicatedClaim } from "@/lib/message-claims";
 import { auditFairness, type FairnessFinding } from "@/lib/fairness-audit";
 import { watchCategory } from "@/lib/cartel-watch";
+import { certifyAgent, type SegmentFidelity } from "@/lib/reality-check";
 import type { VerificationOutcome } from "@/lib/nudge-verification";
 import { Note, Panel, Row, Tabs, Verdict, styles, type Tone } from "./ui";
 
@@ -64,6 +66,7 @@ export default function AttestConsole() {
         <SentinelPanel />
         <FairnessPanel />
         <CartelPanel />
+        <RealityPanel />
       </div>
 
       <footer style={footer}>
@@ -369,6 +372,67 @@ function CartelPanel() {
           }
           secondary={report.convergence.reason}
         />
+      </ul>
+
+      <Note>{scenario.note}</Note>
+    </Panel>
+  );
+}
+
+// --- Reality Check ----------------------------------------------------------
+
+const FIDELITY_TONE: Record<SegmentFidelity["verdict"], Tone> = {
+  calibrated: "good",
+  optimistic: "bad",
+  pessimistic: "info",
+  insufficient: "warn",
+};
+
+function RealityPanel() {
+  const [scenarioId, setScenarioId] = useState(REALITY_SCENARIOS[0].id);
+  const scenario = REALITY_SCENARIOS.find((s) => s.id === scenarioId)!;
+
+  const result = useMemo(
+    () => certifyAgent({ agent: scenario.agent, evidence: scenario.evidence }),
+    [scenario]
+  );
+
+  const tone: Tone =
+    result.decision === "refused" ? "bad" : result.decision === "certified" ? "good" : "warn";
+
+  return (
+    <Panel
+      title="Reality Check"
+      kicker="Simulated customers never walk away. An agent certified against them was graded on an easier population than it will meet — and the bias concentrates in exactly the people a pushy agent harms."
+    >
+      <Tabs
+        options={REALITY_SCENARIOS.map((s) => ({ id: s.id, label: s.label }))}
+        active={scenarioId}
+        onSelect={setScenarioId}
+      />
+
+      <Verdict
+        tone={tone}
+        label={
+          result.decision === "certified"
+            ? "Certified"
+            : result.decision === "refused"
+              ? "Certification refused"
+              : "Not enough evidence to certify"
+        }
+        detail={result.summary}
+      />
+
+      <ul style={styles.list}>
+        {result.segments.map((segment) => (
+          <Row
+            key={segment.segment}
+            tone={FIDELITY_TONE[segment.verdict]}
+            chip={segment.verdict}
+            primary={`${segment.segment}: simulator ${(segment.simulatedRate * 100).toFixed(1)}% vs measured ${(segment.measuredRate * 100).toFixed(1)}%`}
+            secondary={segment.reason}
+          />
+        ))}
       </ul>
 
       <Note>{scenario.note}</Note>

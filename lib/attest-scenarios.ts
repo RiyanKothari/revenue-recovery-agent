@@ -2,6 +2,7 @@ import type { AttemptReservation, NudgeVerificationRow } from "./db/types";
 import type { VerifierDb } from "./nudge-verify-service";
 import type { Claim, OfferFacts } from "./message-claims";
 import type { OfferRecord } from "./offer-ledger";
+import type { SegmentEvidence } from "./reality-check";
 
 /**
  * Fixtures for the Attest console.
@@ -368,5 +369,67 @@ export const CARTEL_SCENARIOS: CartelScenario[] = [
       ...cohortOffers({ prefix: "c", discounts: [8, 16, 24], offeredAtIso: AFTER, agentVersion: null }),
     ],
     note: "Not a statistic. These decisions were computed from a rival's data, it is recorded, and it is the mechanism the RealPage theory actually turned on.",
+  },
+];
+
+// --- Reality Check ----------------------------------------------------------
+
+export interface RealityScenario {
+  id: string;
+  label: string;
+  agent: string;
+  evidence: SegmentEvidence[];
+  note: string;
+}
+
+function seg(segment: string, sim: [number, number], real: [number, number]): SegmentEvidence {
+  return {
+    segment,
+    simulated: { n: sim[0], converted: sim[1], recoveredPaise: 0 },
+    measured: { n: real[0], converted: real[1], recoveredPaise: 0 },
+  };
+}
+
+/**
+ * The segment names are the argument.
+ *
+ * The paper's finding is not that simulators are uniformly wrong, it is that
+ * they are wrong *unevenly* — they halve expressed resistance for eventual
+ * non-buyers and never walk away. So the reluctant segment is the one that
+ * diverges while browsers and loyal customers track reality closely, which is
+ * exactly the shape that survives an aggregate review.
+ */
+export const REALITY_SCENARIOS: RealityScenario[] = [
+  {
+    id: "refused",
+    label: "The simulator flatters the agent",
+    agent: "cart-agent@1",
+    evidence: [
+      seg("browsers", [2000, 1000], [2000, 995]),
+      seg("loyal", [2000, 1400], [2000, 1390]),
+      seg("reluctant", [400, 240], [400, 120]),
+    ],
+    note: "Two segments track reality almost exactly. The third does not, and it is the one where an agent that pressures reluctant people looks excellent against customers who cannot walk away. Averaging the three would have hidden it, because the well-modelled segments are also the larger ones.",
+  },
+  {
+    id: "certified",
+    label: "Tracks reality, including conservatively",
+    agent: "cart-agent@2",
+    evidence: [
+      seg("browsers", [2000, 1000], [2000, 995]),
+      seg("loyal", [2000, 1400], [2000, 1390]),
+      seg("enthusiastic", [400, 120], [400, 240]),
+    ],
+    note: "One segment is badly understated, and that is allowed. Overstating certifies an agent that will underperform in the field; understating wastes opportunity and leaves no customer worse off, so only optimism refuses.",
+  },
+  {
+    id: "insufficient",
+    label: "Not enough evidence to certify",
+    agent: "cart-agent@3",
+    evidence: [
+      seg("browsers", [2000, 1000], [2000, 995]),
+      seg("rare", [12, 10], [12, 9]),
+    ],
+    note: "No optimism was found anywhere. That is not the same as fidelity: twelve observations could not have revealed a gap of any size, and a process that reads silence as a pass is a rubber stamp.",
   },
 ];

@@ -5,6 +5,7 @@ import {
   FAIRNESS_SCENARIOS,
   NUDGE_FIXTURES,
   NUDGE_SCENARIOS,
+  REALITY_SCENARIOS,
   SENTINEL_CLAIMS,
   SENTINEL_CONFIGS,
   SENTINEL_NOW,
@@ -14,6 +15,7 @@ import { verifyNudge } from "../lib/nudge-verify-service";
 import { screenMessage } from "../lib/message-claims";
 import { auditFairness } from "../lib/fairness-audit";
 import { watchCategory } from "../lib/cartel-watch";
+import { MATERIAL_FIDELITY_GAP_PP, certifyAgent } from "../lib/reality-check";
 import { ATTEMPT_CAP, normaliseCode } from "../lib/nudge-verification";
 
 /**
@@ -246,4 +248,68 @@ test("the proof scenario names the rival whose data leaked", () => {
     assert.ok(violation.foreignMerchantIds.length > 0);
     assert.ok(!violation.foreignMerchantIds.includes(violation.merchantId));
   }
+});
+
+// --- Reality Check
+
+test("each reality scenario produces the decision its caption promises", () => {
+  const expected: Record<string, string> = {
+    refused: "refused",
+    certified: "certified",
+    insufficient: "insufficient_evidence",
+  };
+
+  for (const scenario of REALITY_SCENARIOS) {
+    const result = certifyAgent({ agent: scenario.agent, evidence: scenario.evidence });
+    assert.equal(
+      result.decision,
+      expected[scenario.id],
+      `${scenario.id} must read as ${expected[scenario.id]}`
+    );
+  }
+});
+
+test("the refused scenario would have passed an aggregate review", () => {
+  /**
+   * The point of the whole panel. Two large segments track reality almost
+   * exactly and one small one is wildly optimistic, so pooling the three
+   * hides the finding — the well-modelled segments are also the larger ones,
+   * which is precisely the shape the paper describes.
+   */
+  const scenario = REALITY_SCENARIOS.find((s) => s.id === "refused")!;
+
+  const pooled = scenario.evidence.reduce(
+    (acc, e) => ({
+      simulated: {
+        n: acc.simulated.n + e.simulated.n,
+        converted: acc.simulated.converted + e.simulated.converted,
+        recoveredPaise: 0,
+      },
+      measured: {
+        n: acc.measured.n + e.measured.n,
+        converted: acc.measured.converted + e.measured.converted,
+        recoveredPaise: 0,
+      },
+    }),
+    {
+      simulated: { n: 0, converted: 0, recoveredPaise: 0 },
+      measured: { n: 0, converted: 0, recoveredPaise: 0 },
+    }
+  );
+
+  const pooledGapPp =
+    (pooled.simulated.converted / pooled.simulated.n -
+      pooled.measured.converted / pooled.measured.n) *
+    100;
+
+  assert.ok(
+    pooledGapPp < MATERIAL_FIDELITY_GAP_PP,
+    `pooled gap of ${pooledGapPp.toFixed(1)}pp looks acceptable, which is why per-segment matters`
+  );
+
+  // Per segment, it is refused.
+  assert.equal(
+    certifyAgent({ agent: scenario.agent, evidence: scenario.evidence }).decision,
+    "refused"
+  );
 });
