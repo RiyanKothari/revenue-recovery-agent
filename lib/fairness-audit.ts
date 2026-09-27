@@ -1,4 +1,4 @@
-import { assessPower, computeLift, type ArmOutcome } from "./experiment";
+import { assessPower, computeLift, type ArmOutcome } from "./statistics";
 import { groupBy, isFavourable, type OfferRecord } from "./offer-ledger";
 
 /**
