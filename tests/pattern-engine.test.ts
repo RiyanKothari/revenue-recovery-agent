@@ -380,3 +380,47 @@ test("a clean category says so plainly", () => {
   assert.deepEqual(report.isolationViolations, []);
   assert.match(report.summary, /No competitor data reached any decision/);
 });
+
+// --- keeping the statistics bundleable
+
+test("the statistics module pulls in nothing Node-only", async () => {
+  /**
+   * A guard for a bug that is invisible to every other check here.
+   *
+   * `experiment.ts` imports `node:crypto` for the holdout hash. The Attest
+   * console is a client component, so pulling one confidence interval into it
+   * dragged that import into the browser bundle, where webpack refuses the
+   * `node:` scheme outright and the page 500s. TypeScript was perfectly happy,
+   * every test passed, and the failure only appeared on a page load.
+   *
+   * So the statistics live apart from the assignment, and this asserts they
+   * stay that way. Reading the source rather than the module graph is crude
+   * and it is the thing that actually breaks: someone adds one convenient
+   * import at the top of the file.
+   */
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../lib/statistics.ts", import.meta.url), "utf8");
+
+  const imports = [...source.matchAll(/^\s*import\s[^;]*?from\s+["']([^"']+)["']/gm)].map(
+    (match) => match[1]
+  );
+
+  for (const specifier of imports) {
+    assert.ok(
+      !specifier.startsWith("node:") && !specifier.startsWith("fs") && !specifier.startsWith("crypto"),
+      `lib/statistics.ts must stay browser-safe, but imports "${specifier}"`
+    );
+  }
+
+  assert.doesNotMatch(source, /\brequire\(/, "no CommonJS require either");
+});
+
+test("experiment.ts still re-exports the statistics it used to own", async () => {
+  // Moving them was supposed to be invisible to existing callers. If this
+  // breaks, every importer of computeLift breaks with it.
+  const experiment = await import("../lib/experiment");
+  const statistics = await import("../lib/statistics");
+
+  assert.equal(experiment.computeLift, statistics.computeLift);
+  assert.equal(experiment.assessPower, statistics.assessPower);
+});
