@@ -21,6 +21,7 @@ import type {
   RevenueEventInsert,
   RevenueEventRow,
 } from "./types";
+import type { MerchantOfferRow } from "../offer-config";
 
 /**
  * MySQL implementation — also covers TiDB, which speaks the MySQL protocol.
@@ -55,6 +56,7 @@ const TABLES = [
   "experiment_assignments",
   "decision_cache",
   "nudge_verifications",
+  "merchant_offers",
   // Not written by the pipeline, but preflight should fail loudly on a
   // database that predates it: a missing table here means the shared rate
   // limiter silently degrades to a per-instance counter.
@@ -94,6 +96,37 @@ function bool(value: unknown): boolean {
 /** DATETIME columns won't accept an ISO string with a trailing 'Z'. */
 function toMysqlDatetime(isoString: string): string {
   return new Date(isoString).toISOString().slice(0, 19).replace("T", " ");
+}
+
+/**
+ * Null stays null, every time.
+ *
+ * A mapper that substituted a default would turn "this merchant configured no
+ * expiry" into "this offer expires at some plausible time", and the Dark
+ * Pattern Sentinel's central case would silently start passing.
+ */
+function toMerchantOffer(row: any): MerchantOfferRow {
+  return {
+    offer_id: row.offer_id,
+    merchant_id: row.merchant_id,
+    coupon_code: row.coupon_code ?? null,
+    discount_kind: row.discount_kind ?? null,
+    discount_value: row.discount_value === null || row.discount_value === undefined
+      ? null
+      : Number(row.discount_value),
+    valid_from: isoOrNull(row.valid_from),
+    valid_until: isoOrNull(row.valid_until),
+    scope: row.scope ?? null,
+    units_remaining: row.units_remaining === null || row.units_remaining === undefined
+      ? null
+      : Number(row.units_remaining),
+    previous_price_paise: row.previous_price_paise === null || row.previous_price_paise === undefined
+      ? null
+      : Number(row.previous_price_paise),
+    recent_purchase_count: row.recent_purchase_count === null || row.recent_purchase_count === undefined
+      ? null
+      : Number(row.recent_purchase_count),
+  };
 }
 
 export function createMysqlDb(connectionUri: string): RecoveryDb {
@@ -498,6 +531,61 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           update.delivery_state ?? null,
           toMysqlDatetime(update.executed_at),
           update.action_id,
+        ]
+      );
+    },
+
+    async findMerchantOffer(merchantId: string, offerId: string) {
+      const rows = await query<any>(
+        `select offer_id, merchant_id, coupon_code, discount_kind, discount_value,
+                valid_from, valid_until, scope, units_remaining,
+                previous_price_paise, recent_purchase_count
+           from merchant_offers
+          where merchant_id = ? and offer_id = ?
+          limit 1`,
+        [merchantId, offerId]
+      );
+      return rows[0] ? toMerchantOffer(rows[0]) : null;
+    },
+
+    async listMerchantOffers(merchantId: string) {
+      const rows = await query<any>(
+        `select offer_id, merchant_id, coupon_code, discount_kind, discount_value,
+                valid_from, valid_until, scope, units_remaining,
+                previous_price_paise, recent_purchase_count
+           from merchant_offers
+          where merchant_id = ?
+          order by offer_id asc`,
+        [merchantId]
+      );
+      return rows.map(toMerchantOffer);
+    },
+
+    async upsertMerchantOffer(row: MerchantOfferRow) {
+      await exec(
+        `insert into merchant_offers
+           (offer_id, merchant_id, coupon_code, discount_kind, discount_value,
+            valid_from, valid_until, scope, units_remaining,
+            previous_price_paise, recent_purchase_count)
+         values (?,?,?,?,?,?,?,?,?,?,?)
+         on duplicate key update
+            merchant_id = values(merchant_id),
+            coupon_code = values(coupon_code),
+            discount_kind = values(discount_kind),
+            discount_value = values(discount_value),
+            valid_from = values(valid_from),
+            valid_until = values(valid_until),
+            scope = values(scope),
+            units_remaining = values(units_remaining),
+            previous_price_paise = values(previous_price_paise),
+            recent_purchase_count = values(recent_purchase_count)`,
+        [
+          row.offer_id, row.merchant_id, row.coupon_code, row.discount_kind,
+          row.discount_value,
+          row.valid_from ? toMysqlDatetime(row.valid_from) : null,
+          row.valid_until ? toMysqlDatetime(row.valid_until) : null,
+          row.scope, row.units_remaining, row.previous_price_paise,
+          row.recent_purchase_count,
         ]
       );
     },

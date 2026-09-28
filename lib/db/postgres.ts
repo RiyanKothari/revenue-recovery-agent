@@ -20,6 +20,7 @@ import type {
   RevenueEventInsert,
   RevenueEventRow,
 } from "./types";
+import type { MerchantOfferRow } from "../offer-config";
 
 /**
  * PostgreSQL implementation, over `pg` rather than a hosted SDK so it runs
@@ -44,6 +45,7 @@ const TABLES = [
   "experiment_assignments",
   "decision_cache",
   "nudge_verifications",
+  "merchant_offers",
   // Not written by the pipeline, but preflight should fail loudly on a
   // database that predates it: a missing table here means the shared rate
   // limiter silently degrades to a per-instance counter.
@@ -72,6 +74,37 @@ function toVerificationRow(row: any): NudgeVerificationRow {
     failed_at: iso(row.failed_at),
     expires_at: iso(row.expires_at),
     attempts: Number(row.attempts),
+  };
+}
+
+/**
+ * Null stays null, every time.
+ *
+ * A mapper that substituted a default would turn "this merchant configured no
+ * expiry" into "this offer expires at some plausible time", and the Dark
+ * Pattern Sentinel's central case would silently start passing.
+ */
+function toMerchantOffer(row: any): MerchantOfferRow {
+  return {
+    offer_id: row.offer_id,
+    merchant_id: row.merchant_id,
+    coupon_code: row.coupon_code ?? null,
+    discount_kind: row.discount_kind ?? null,
+    discount_value: row.discount_value === null || row.discount_value === undefined
+      ? null
+      : Number(row.discount_value),
+    valid_from: isoOrNull(row.valid_from),
+    valid_until: isoOrNull(row.valid_until),
+    scope: row.scope ?? null,
+    units_remaining: row.units_remaining === null || row.units_remaining === undefined
+      ? null
+      : Number(row.units_remaining),
+    previous_price_paise: row.previous_price_paise === null || row.previous_price_paise === undefined
+      ? null
+      : Number(row.previous_price_paise),
+    recent_purchase_count: row.recent_purchase_count === null || row.recent_purchase_count === undefined
+      ? null
+      : Number(row.recent_purchase_count),
   };
 }
 
@@ -454,6 +487,58 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           update.provider_message_id ?? null,
           update.delivery_state ?? null,
           update.executed_at,
+        ]
+      );
+    },
+
+    async findMerchantOffer(merchantId: string, offerId: string) {
+      const rows = await query<any>(
+        `select offer_id, merchant_id, coupon_code, discount_kind, discount_value,
+                valid_from, valid_until, scope, units_remaining,
+                previous_price_paise, recent_purchase_count
+           from merchant_offers
+          where merchant_id = $1 and offer_id = $2
+          limit 1`,
+        [merchantId, offerId]
+      );
+      return rows[0] ? toMerchantOffer(rows[0]) : null;
+    },
+
+    async listMerchantOffers(merchantId: string) {
+      const rows = await query<any>(
+        `select offer_id, merchant_id, coupon_code, discount_kind, discount_value,
+                valid_from, valid_until, scope, units_remaining,
+                previous_price_paise, recent_purchase_count
+           from merchant_offers
+          where merchant_id = $1
+          order by offer_id asc`,
+        [merchantId]
+      );
+      return rows.map(toMerchantOffer);
+    },
+
+    async upsertMerchantOffer(row: MerchantOfferRow) {
+      await query(
+        `insert into merchant_offers
+           (offer_id, merchant_id, coupon_code, discount_kind, discount_value,
+            valid_from, valid_until, scope, units_remaining,
+            previous_price_paise, recent_purchase_count)
+         values ($1,$2,$3,$4,$5,$6::timestamptz,$7::timestamptz,$8,$9,$10,$11)
+         on conflict (offer_id) do update
+            set merchant_id = excluded.merchant_id,
+                coupon_code = excluded.coupon_code,
+                discount_kind = excluded.discount_kind,
+                discount_value = excluded.discount_value,
+                valid_from = excluded.valid_from,
+                valid_until = excluded.valid_until,
+                scope = excluded.scope,
+                units_remaining = excluded.units_remaining,
+                previous_price_paise = excluded.previous_price_paise,
+                recent_purchase_count = excluded.recent_purchase_count`,
+        [
+          row.offer_id, row.merchant_id, row.coupon_code, row.discount_kind,
+          row.discount_value, row.valid_from, row.valid_until, row.scope,
+          row.units_remaining, row.previous_price_paise, row.recent_purchase_count,
         ]
       );
     },

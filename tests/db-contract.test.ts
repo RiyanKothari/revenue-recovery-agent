@@ -1037,3 +1037,73 @@ forEachDriver("decision facts are derived from what the pipeline already wrote",
   const bounded = await db.listDecisionFacts(2);
   assert.ok(bounded.length <= 2, `${driver}: the bound is honoured`);
 });
+
+forEachDriver("an offer's nulls survive a round trip through the database", async (db, driver) => {
+  /**
+   * The Dark Pattern Sentinel's central case depends on this. A null
+   * `valid_until` means the merchant configured NO expiry, which is exactly
+   * what makes a deadline claim a fabrication — and a driver that turned it
+   * into a default, a zero or an empty string would make the fabricated
+   * deadline start passing while every adjudicator test stayed green.
+   */
+  const offerId = `${RUN}_noexpiry`;
+
+  await db.upsertMerchantOffer({
+    offer_id: offerId,
+    merchant_id: RUN,
+    coupon_code: "FLASH",
+    discount_kind: "percent",
+    discount_value: 20,
+    valid_from: null,
+    valid_until: null,
+    scope: "universal",
+    units_remaining: null,
+    previous_price_paise: null,
+    recent_purchase_count: null,
+  });
+
+  const found = await db.findMerchantOffer(RUN, offerId);
+  assert.ok(found, `${driver}: the offer reads back`);
+  assert.equal(found!.valid_until, null, `${driver}: no expiry stays no expiry`);
+  assert.equal(found!.units_remaining, null, `${driver}: unknown stock stays unknown`);
+  assert.equal(found!.previous_price_paise, null, `${driver}: no price history stays absent`);
+  assert.equal(found!.scope, "universal", `${driver}: scope survives`);
+  // Numeric, not a string — the adjudicator compares it for exact equality.
+  assert.equal(typeof found!.discount_value, "number", `${driver}: discount is a number`);
+  assert.equal(found!.discount_value, 20, driver);
+});
+
+forEachDriver("an unknown offer is null, and re-seeding one is not an error", async (db, driver) => {
+  // Null rather than an empty row: "this offer has no expiry" and "we have
+  // never heard of this offer" are different facts and the Sentinel reaches
+  // different conclusions from them.
+  assert.equal(await db.findMerchantOffer(RUN, "no_such_offer"), null, driver);
+
+  const offerId = `${RUN}_upsert`;
+  const base = {
+    offer_id: offerId,
+    merchant_id: RUN,
+    coupon_code: null,
+    discount_kind: "flat" as const,
+    discount_value: 50000,
+    valid_from: null,
+    valid_until: null,
+    scope: "personalised" as const,
+    units_remaining: 3,
+    previous_price_paise: 499900,
+    recent_purchase_count: 12,
+  };
+
+  await db.upsertMerchantOffer(base);
+  await db.upsertMerchantOffer({ ...base, units_remaining: 500 });
+
+  const found = await db.findMerchantOffer(RUN, offerId);
+  assert.equal(found!.units_remaining, 500, `${driver}: the second write wins`);
+
+  const listed = await db.listMerchantOffers(RUN);
+  assert.equal(
+    listed.filter((o) => o.offer_id === offerId).length,
+    1,
+    `${driver}: re-seeding does not duplicate`
+  );
+});

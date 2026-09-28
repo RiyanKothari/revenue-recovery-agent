@@ -1,3 +1,5 @@
+import type { MerchantOfferRow } from "../offer-config";
+
 /**
  * The pipeline's data contract.
  *
@@ -466,6 +468,20 @@ export interface RecoveryDb {
    * disparity has told you nothing, and has told it to you confidently.
    */
   listDecisionFacts(limit?: number): Promise<DecisionFactRow[]>;
+
+  // --- offer configuration (Dark Pattern Sentinel)
+  /**
+   * The merchant's real offer configuration, or null when there is no such
+   * offer.
+   *
+   * Null rather than an empty row, because "this offer has no expiry" and "we
+   * have never heard of this offer" are different facts and the Sentinel
+   * reaches different conclusions from them.
+   */
+  findMerchantOffer(merchantId: string, offerId: string): Promise<MerchantOfferRow | null>;
+  listMerchantOffers(merchantId: string): Promise<MerchantOfferRow[]>;
+  /** Idempotent, so seeding and re-seeding a demo offer is not an error. */
+  upsertMerchantOffer(row: MerchantOfferRow): Promise<void>;
 
   // --- message authentication (Verified Nudge)
   /**

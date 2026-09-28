@@ -238,3 +238,34 @@ create table if not exists nudge_verifications (
   attempts int not null default 0,
   created_at timestamptz not null default now()
 );
+
+-- The merchant's real offer configuration: the ground truth the Dark Pattern
+-- Sentinel checks outbound claims against. See lib/offer-config.ts.
+--
+-- Urgency is only a dark pattern when it is false. "This offer expires in 24
+-- hours" is useful information if it does, and a fabricated deadline if no
+-- expiry was ever configured. The words are identical; only this table tells
+-- them apart, which is why a detector that scores copy for manipulative tone
+-- cannot do the job — it cannot see this.
+--
+-- Every nullable column below is nullable ON PURPOSE. A null `valid_until`
+-- does not mean "unknown expiry", it means the merchant configured none, and
+-- that is precisely what makes a deadline claim a fabrication. Defaulting any
+-- of these to a plausible value would make the Sentinel's central case
+-- silently start passing.
+create table if not exists merchant_offers (
+  offer_id text primary key,
+  merchant_id text not null,
+  coupon_code text,
+  discount_kind text,                 -- 'percent' | 'flat'
+  discount_value numeric,             -- percent as a percentage, flat in paise
+  valid_from timestamptz,
+  valid_until timestamptz,            -- null = no expiry was ever configured
+  scope text,                         -- 'personalised' | 'universal'
+  units_remaining int,
+  previous_price_paise bigint,
+  recent_purchase_count int,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_merchant_offers_merchant on merchant_offers(merchant_id);

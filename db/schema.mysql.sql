@@ -209,3 +209,25 @@ create table if not exists nudge_verifications (
   attempts int not null default 0,
   created_at datetime(3) not null default current_timestamp(3)
 ) engine=InnoDB;
+
+-- The merchant's real offer configuration: ground truth for the Dark Pattern
+-- Sentinel. See the long note in schema.postgres.sql — every nullable column
+-- is nullable on purpose, because a null `valid_until` means the merchant
+-- configured no expiry, which is exactly what makes a deadline claim a
+-- fabrication.
+create table if not exists merchant_offers (
+  offer_id varchar(191) primary key,
+  merchant_id varchar(191) not null,
+  coupon_code varchar(191),
+  discount_kind varchar(16),
+  discount_value decimal(12,2),
+  valid_from datetime(3),
+  valid_until datetime(3),
+  scope varchar(16),
+  units_remaining int,
+  previous_price_paise bigint,
+  recent_purchase_count int,
+  created_at datetime(3) not null default current_timestamp(3)
+) engine=InnoDB;
+
+create index idx_merchant_offers_merchant on merchant_offers(merchant_id);
