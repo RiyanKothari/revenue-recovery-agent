@@ -153,9 +153,20 @@ export async function extractClaims(
 
   const validated = responseSchema.safeParse(parsed);
   if (!validated.success) {
+    /**
+     * The PATH, not just the message.
+     *
+     * Zod's message for a missing field is the bare word "Required", which in
+     * production told me only that something was absent from a response I
+     * could not see. `claims.0.text: Required` names the field and the claim
+     * index, which is the difference between a diagnosis and a guess — and
+     * the guess costs a deploy cycle each time.
+     */
+    const issue = validated.error.issues[0];
+    const where = issue?.path.length ? issue.path.join(".") : "response";
     return {
       ok: false,
-      reason: `model_returned_unexpected_shape: ${validated.error.issues[0]?.message ?? "schema mismatch"}`,
+      reason: `model_returned_unexpected_shape: ${where}: ${issue?.message ?? "schema mismatch"}`,
     };
   }
 

@@ -190,3 +190,23 @@ test("a deadline claim carrying neither time is unverifiable, not rejected", () 
     assert.equal(result.ok, true);
   })();
 });
+
+test("a shape failure names the field, not just that something was required", () => {
+  /**
+   * In production this reason read `Required`, which said only that something
+   * was missing from a response I could not see. Each guess at which field
+   * cost a deploy cycle.
+   */
+  return (async () => {
+    const result = await extractClaims(
+      "x",
+      fakeModel({
+        text: JSON.stringify({ claims: [{ type: "discount", kind: "percent", value: 20 }] }),
+      })
+    );
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /claims\.0\.text/);
+  })();
+});
