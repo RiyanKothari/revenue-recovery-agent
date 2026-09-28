@@ -34,11 +34,24 @@ const claimSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("deadline"),
     text: z.string().min(1),
-    // Nullable, not optional: the model must say it found neither form rather
-    // than silently omitting the field, which would be indistinguishable from
-    // a response that was truncated mid-object.
-    hoursFromSend: z.number().finite().nullable(),
-    absoluteIso: z.string().nullable(),
+    /**
+     * Missing is treated as null, and I had this the other way round.
+     *
+     * The first version required both fields explicitly, reasoning that a
+     * model omitting one was indistinguishable from a response truncated
+     * mid-object. That defence was already redundant — truncation has its own
+     * detector on `stopReason` — and it was wrong in practice: real Gemini
+     * output omits null fields rather than writing them, so every deadline
+     * claim it extracted was rejected as the wrong shape and the screen
+     * refused to run at all.
+     *
+     * Rejecting a valid extraction because a model left out a null is the
+     * worse failure. A claim with neither time is still checked, and the
+     * adjudicator returns `unsupported` for it, which is the safe answer
+     * reached honestly.
+     */
+    hoursFromSend: z.number().finite().nullish().transform((v) => v ?? null),
+    absoluteIso: z.string().nullish().transform((v) => v ?? null),
   }),
   z.object({
     type: z.literal("discount"),

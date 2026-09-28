@@ -87,13 +87,23 @@ test("well-formed JSON of the wrong shape is refused before it reaches the adjud
   );
   assert.equal(invented.ok, false);
 
-  const malformed = await extractClaims(
+  /**
+   * A deadline missing its time fields used to be refused here, and that
+   * assertion is deliberately gone. It was enforcing a rule that cost the
+   * whole feature in production — see "a model that omits its null fields is
+   * still understood" below. What replaced it is narrower and still strict:
+   * a claim whose time field is present but the wrong TYPE is still refused,
+   * because that is a real shape error rather than an omission.
+   */
+  const wrongType = await extractClaims(
     "x",
-    // A deadline missing its nullable fields — indistinguishable from a
-    // response truncated mid-object if the fields were merely optional.
-    fakeModel({ text: JSON.stringify({ claims: [{ type: "deadline", text: "soon" }] }) })
+    fakeModel({
+      text: JSON.stringify({
+        claims: [{ type: "deadline", text: "soon", hoursFromSend: "twenty four" }],
+      }),
+    })
   );
-  assert.equal(malformed.ok, false);
+  assert.equal(wrongType.ok, false);
 
   const notAList = await extractClaims("x", fakeModel({ text: '{"claims":"none"}' }));
   assert.equal(notAList.ok, false);
@@ -135,4 +145,48 @@ test("extraction and adjudication compose into one verdict", async () => {
   });
   assert.equal(fabricated.decision, "hold");
   assert.equal(fabricated.blocking.length, 1);
+});
+
+test("a model that omits its null fields is still understood", () => {
+  /**
+   * Regression, found in production rather than in a test. Gemini omits null
+   * fields instead of writing them, so requiring `hoursFromSend` and
+   * `absoluteIso` explicitly meant every deadline claim it extracted was
+   * rejected as the wrong shape — and the Sentinel refused to run at all,
+   * reporting a model problem for a message it had understood perfectly.
+   *
+   * Truncation is caught separately on `stopReason`, so requiring these added
+   * no safety and cost the whole feature.
+   */
+  return (async () => {
+    const result = await extractClaims(
+      "expires in 24 hours",
+      fakeModel({
+        text: JSON.stringify({
+          claims: [{ type: "deadline", text: "expires in 24 hours", hoursFromSend: 24 }],
+        }),
+      })
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const claim = result.claims[0];
+    assert.equal(claim.type, "deadline");
+    if (claim.type !== "deadline") return;
+    // Normalised to null so the adjudicator never sees undefined.
+    assert.equal(claim.absoluteIso, null);
+    assert.equal(claim.hoursFromSend, 24);
+  })();
+});
+
+test("a deadline claim carrying neither time is unverifiable, not rejected", () => {
+  // It reaches the adjudicator and comes back `unsupported`, which is the
+  // safe answer arrived at honestly rather than by refusing to parse.
+  return (async () => {
+    const result = await extractClaims(
+      "soon",
+      fakeModel({ text: JSON.stringify({ claims: [{ type: "deadline", text: "soon" }] }) })
+    );
+    assert.equal(result.ok, true);
+  })();
 });
