@@ -46,6 +46,7 @@ const TABLES = [
   "decision_cache",
   "nudge_verifications",
   "merchant_offers",
+  "system_secrets",
   // Not written by the pipeline, but preflight should fail loudly on a
   // database that predates it: a missing table here means the shared rate
   // limiter silently degrades to a per-instance counter.
@@ -489,6 +490,30 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
           update.executed_at,
         ]
       );
+    },
+
+    async getSystemSecret(name: string) {
+      const rows = await query<{ value: string }>(
+        "select value from system_secrets where name = $1 limit 1",
+        [name]
+      );
+      return rows[0]?.value ?? null;
+    },
+
+    async putSystemSecretIfAbsent(name: string, value: string) {
+      // `do nothing` then read back: the loser of a race gets the winner's
+      // value rather than its own, so both instances agree.
+      await query(
+        `insert into system_secrets (name, value) values ($1, $2)
+         on conflict (name) do nothing`,
+        [name, value]
+      );
+      const rows = await query<{ value: string }>(
+        "select value from system_secrets where name = $1 limit 1",
+        [name]
+      );
+      if (!rows[0]) throw new Error(`system_secrets: could not read back "${name}" after writing it`);
+      return rows[0].value;
     },
 
     async findMerchantOffer(merchantId: string, offerId: string) {

@@ -1,4 +1,6 @@
 import type { RecoveryDb } from "./db";
+import { resolveBaseUrl, resolveNudgeSecret } from "./app-secret";
+import { resolveIdentity } from "./ledger-writer";
 import {
   ATTEMPT_CAP,
   VERIFICATION_TTL_MS,
@@ -41,7 +43,10 @@ export interface VerifierDeps {
   attemptCap?: number;
 }
 
-export type IssuerDb = Pick<RecoveryDb, "issueNudgeVerification">;
+export type IssuerDb = Pick<
+  RecoveryDb,
+  "issueNudgeVerification" | "getSystemSecret" | "putSystemSecretIfAbsent"
+>;
 
 export interface IssuerDeps {
   db: IssuerDb;
@@ -74,22 +79,31 @@ export async function issueVerification(
   payment: { revenueEventId: string; amountPaise: number; failedAtIso: string },
   deps: IssuerDeps
 ): Promise<{ code: string; url: string } | null> {
-  const secret = deps.secret ?? process.env.NUDGE_VERIFICATION_SECRET;
-  const baseUrl = (deps.baseUrl ?? process.env.APP_BASE_URL ?? "").replace(/\/+$/, "");
-  const merchantName = deps.merchantName ?? process.env.MERCHANT_NAME;
+  const baseUrl = deps.baseUrl?.replace(/\/+$/, "") ?? resolveBaseUrl();
+  const merchantName = deps.merchantName ?? resolveIdentity().merchantId;
 
   // Without a base url the message would carry a code and nowhere to check
-  // it, which is worse than carrying nothing.
-  if (!baseUrl || !merchantName) {
+  // it, which is worse than carrying nothing. Everything else now has a
+  // working default, so this is the only configuration that can stop a code
+  // being issued — and on Vercel even this comes from the platform.
+  if (!baseUrl) {
     console.error(
-      "[nudge-verify] APP_BASE_URL or MERCHANT_NAME is unset — sending without a verification code."
+      "[nudge-verify] no APP_BASE_URL and no Vercel URL to fall back on — sending without a verification code."
     );
     return null;
   }
 
   try {
-    // Throws on an empty secret, deliberately. An unauthenticated
-    // authentication code is not a degraded mode, it is a liability.
+    /**
+     * Generated on first use and stored, rather than demanded from the
+     * environment. See lib/app-secret.ts for why this one secret may live in
+     * the database: it protects rows in that same database, so an attacker
+     * who could read it could already read what it protects.
+     *
+     * `deriveVerificationCode` still throws on an empty value, which is now
+     * unreachable through this path and stays as the backstop it was.
+     */
+    const secret = deps.secret ?? (await resolveNudgeSecret(deps.db));
     const code = deriveVerificationCode(payment.revenueEventId, secret);
 
     const result = await deps.db.issueNudgeVerification({

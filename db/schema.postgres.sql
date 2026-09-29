@@ -269,3 +269,21 @@ create table if not exists merchant_offers (
 );
 
 create index if not exists idx_merchant_offers_merchant on merchant_offers(merchant_id);
+
+-- Secrets this deployment generates for itself.
+--
+-- Only the Verified Nudge derivation key lives here, and the reason it may is
+-- specific: it protects rows in THIS database. An attacker who can read this
+-- table can already read nudge_verifications, which holds the codes
+-- themselves along with the amounts and merchants they attest to, so deriving
+-- codes would tell them nothing they could not simply select.
+--
+-- That argument does not generalise. The Razorpay webhook secret is shared
+-- with a third party and protects the integrity of data arriving from
+-- outside; the WhatsApp token spends money. Those stay in the environment and
+-- must never be moved here.
+create table if not exists system_secrets (
+  name text primary key,
+  value text not null,
+  created_at timestamptz not null default now()
+);

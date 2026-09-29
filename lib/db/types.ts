@@ -469,6 +469,19 @@ export interface RecoveryDb {
    */
   listDecisionFacts(limit?: number): Promise<DecisionFactRow[]>;
 
+  // --- self-generated secrets
+  /** The stored value, or null when this deployment has never generated one. */
+  getSystemSecret(name: string): Promise<string | null>;
+  /**
+   * Stores a secret only if none exists, and returns the value that won.
+   *
+   * Two cold instances can generate different keys at the same moment. The
+   * caller must continue with whichever one actually landed, or half the
+   * verification codes in flight stop verifying — which reaches the customer
+   * as a genuine message being called fake.
+   */
+  putSystemSecretIfAbsent(name: string, value: string): Promise<string>;
+
   // --- offer configuration (Dark Pattern Sentinel)
   /**
    * The merchant's real offer configuration, or null when there is no such

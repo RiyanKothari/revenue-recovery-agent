@@ -231,3 +231,13 @@ create table if not exists merchant_offers (
 ) engine=InnoDB;
 
 create index idx_merchant_offers_merchant on merchant_offers(merchant_id);
+
+-- Secrets this deployment generates for itself. See the note in
+-- schema.postgres.sql: only the Verified Nudge derivation key belongs here,
+-- because it protects rows in this same database. Third-party secrets and
+-- anything that spends money stay in the environment.
+create table if not exists system_secrets (
+  name varchar(191) primary key,
+  value text not null,
+  created_at datetime(3) not null default current_timestamp(3)
+) engine=InnoDB;

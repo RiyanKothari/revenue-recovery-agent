@@ -60,6 +60,12 @@ function fakes(
     async issueNudgeVerification() {
       return { id: "code" };
     },
+    async getSystemSecret() {
+      return "test-secret";
+    },
+    async putSystemSecretIfAbsent(_name: string, value: string) {
+      return value;
+    },
   };
 
   return {

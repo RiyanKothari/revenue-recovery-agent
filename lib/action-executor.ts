@@ -26,7 +26,13 @@ import { issueVerification } from "./nudge-verify-service";
 
 export type ExecutorDb = Pick<
   RecoveryDb,
-  "insertRecoveryAction" | "countLiveLinks" | "issueNudgeVerification"
+  | "insertRecoveryAction"
+  | "countLiveLinks"
+  | "issueNudgeVerification"
+  // Read by the issuer, which generates the nudge secret on first use rather
+  // than demanding it from the environment.
+  | "getSystemSecret"
+  | "putSystemSecretIfAbsent"
 >;
 
 export interface ExecutorDeps {

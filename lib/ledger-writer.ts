@@ -136,8 +136,30 @@ export function resolveIdentity(
   // two variables it cares about instead of constructing a whole environment.
   env: Record<string, string | undefined> = process.env
 ): LedgerIdentity {
+  const configured = env.MERCHANT_ID?.trim() || env.MERCHANT_NAME?.trim();
+  if (configured) return { merchantId: configured, category: category(env) };
+
+  /**
+   * Falls back to the deployment's own hostname before giving up.
+   *
+   * Not a fabricated name: on Vercel this IS the identity of the thing making
+   * the decisions, and the platform has already told the process what it is.
+   * Making an operator retype it was asking them to repeat something we knew.
+   *
+   * The final fallback stays deliberately ugly. A fairness report headed
+   * `unconfigured_merchant` is a configuration problem announcing itself in
+   * the one place somebody will read it, which is better than a plausible
+   * default that hides the fact that nobody said who this is.
+   */
+  const host = env.VERCEL_PROJECT_PRODUCTION_URL?.trim() || env.VERCEL_URL?.trim();
+  const fromHost = host?.split(".")[0];
+
   return {
-    merchantId: env.MERCHANT_ID?.trim() || env.MERCHANT_NAME?.trim() || "unconfigured_merchant",
-    category: env.MERCHANT_CATEGORY?.trim() || "uncategorised",
+    merchantId: fromHost || "unconfigured_merchant",
+    category: category(env),
   };
+}
+
+function category(env: Record<string, string | undefined>): string {
+  return env.MERCHANT_CATEGORY?.trim() || "uncategorised";
 }

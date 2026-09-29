@@ -31,6 +31,8 @@ export type DispatcherDb = Pick<
   | "completeDueAction"
   | "countLiveLinks"
   | "issueNudgeVerification"
+  | "getSystemSecret"
+  | "putSystemSecretIfAbsent"
 >;
 
 export interface DispatcherDeps {
