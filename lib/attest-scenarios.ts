@@ -3,6 +3,7 @@ import type { VerifierDb } from "./nudge-verify-service";
 import type { Claim, OfferFacts } from "./message-claims";
 import type { OfferRecord } from "./offer-ledger";
 import type { SegmentEvidence } from "./reality-check";
+import type { MembershipProbe, ProbeProvenance } from "./unlearning-verifier";
 
 /**
  * Fixtures for the Attest console.
@@ -431,5 +432,79 @@ export const REALITY_SCENARIOS: RealityScenario[] = [
       seg("rare", [12, 10], [12, 9]),
     ],
     note: "No optimism was found anywhere. That is not the same as fidelity: twelve observations could not have revealed a gap of any size, and a process that reads silence as a pass is a rubber stamp.",
+  },
+];
+
+// --- Unlearning Verifier -----------------------------------------------------
+
+export interface UnlearningScenario {
+  id: string;
+  label: string;
+  merchantId: string;
+  provenance: ProbeProvenance;
+  probes: MembershipProbe[];
+  note: string;
+}
+
+/** Evenly spread confidences across a band, so scenarios are reproducible. */
+function probeBand(
+  which: "forget" | "control",
+  prefix: string,
+  count: number,
+  low: number,
+  high: number
+): MembershipProbe[] {
+  return Array.from({ length: count }, (_, i) => ({
+    recordId: `${prefix}_${i}`,
+    cohort: which,
+    confidence: count === 1 ? low : low + ((high - low) * i) / (count - 1),
+  }));
+}
+
+export const UNLEARNING_SCENARIOS: UnlearningScenario[] = [
+  {
+    id: "residual",
+    label: "The model still recognises them",
+    merchantId: "m_departed",
+    provenance: "auditor",
+    probes: [
+      ...probeBand("forget", "f", 700, 0.2, 0.6),
+      ...probeBand("forget", "fhot", 100, 0.95, 1.0),
+      ...probeBand("control", "c", 800, 0.2, 0.6),
+    ],
+    note: "The rows were deleted and the model was retrained, but an eighth of the forgotten records are still recognisable. Real unlearning rarely fails completely, which is exactly why a spot check would miss this.",
+  },
+  {
+    id: "clean",
+    label: "Nothing detectable, auditor's probes",
+    merchantId: "m_departed",
+    provenance: "auditor",
+    probes: [
+      ...probeBand("forget", "f", 2000, 0.2, 0.8),
+      ...probeBand("control", "c", 2000, 0.2, 0.8),
+    ],
+    note: "The strongest verdict this tool will give, and note what it does not say. Not 'the data is gone' — absence of evidence at a stated sensitivity, on probes the auditor chose.",
+  },
+  {
+    id: "platform_probes",
+    label: "Same result, platform's own probes",
+    merchantId: "m_departed",
+    provenance: "platform",
+    probes: [
+      ...probeBand("forget", "f", 2000, 0.2, 0.8),
+      ...probeBand("control", "c", 2000, 0.2, 0.8),
+    ],
+    note: "Identical numbers, weaker conclusion. A control set chosen by the party being audited can be chosen to pass. The measurement is sound; the evidence it ran on is not independent.",
+  },
+  {
+    id: "underpowered",
+    label: "Too small to conclude anything",
+    merchantId: "m_departed",
+    provenance: "auditor",
+    probes: [
+      ...probeBand("forget", "f", 40, 0.2, 0.8),
+      ...probeBand("control", "c", 40, 0.2, 0.8),
+    ],
+    note: "Forty probes a side cannot resolve a five point advantage, so finding nothing says nothing. A verifier that called this clean would be a rubber stamp.",
   },
 ];

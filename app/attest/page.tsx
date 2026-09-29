@@ -7,6 +7,7 @@ import {
   NUDGE_FIXTURES,
   NUDGE_SCENARIOS,
   REALITY_SCENARIOS,
+  UNLEARNING_SCENARIOS,
   SENTINEL_CLAIMS,
   SENTINEL_CONFIGS,
   SENTINEL_MESSAGE,
@@ -19,6 +20,7 @@ import { auditFairness, type FairnessFinding } from "@/lib/fairness-audit";
 import { watchCategory } from "@/lib/cartel-watch";
 import { certifyAgent, type SegmentFidelity } from "@/lib/reality-check";
 import { buildCalibration } from "@/lib/simulator-calibration";
+import { verifyUnlearning, type UnlearningVerdict } from "@/lib/unlearning-verifier";
 import type { VerificationOutcome } from "@/lib/nudge-verification";
 import { Note, Panel, Row, Tabs, Verdict, styles, type Tone } from "./ui";
 
@@ -68,6 +70,7 @@ export default function AttestConsole() {
         <FairnessPanel />
         <CartelPanel />
         <RealityPanel />
+        <UnlearningPanel />
       </div>
 
       <footer style={footer}>
@@ -468,6 +471,93 @@ function RealityPanel() {
       </div>
 
       <Note>{scenario.note}</Note>
+    </Panel>
+  );
+}
+
+// --- Unlearning Verifier ----------------------------------------------------
+
+const UNLEARNING_TONE: Record<UnlearningVerdict, Tone> = {
+  residual_influence: "bad",
+  no_detectable_influence: "good",
+  unverifiable_provenance: "warn",
+  insufficient: "warn",
+};
+
+const UNLEARNING_LABEL: Record<UnlearningVerdict, string> = {
+  residual_influence: "Residual influence found",
+  no_detectable_influence: "No residual influence detectable",
+  unverifiable_provenance: "Clean, but on the audited party's own evidence",
+  insufficient: "Not enough evidence to conclude",
+};
+
+function UnlearningPanel() {
+  const [scenarioId, setScenarioId] = useState(UNLEARNING_SCENARIOS[0].id);
+  const scenario = UNLEARNING_SCENARIOS.find((s) => s.id === scenarioId)!;
+
+  const report = useMemo(
+    () =>
+      verifyUnlearning({
+        merchantId: scenario.merchantId,
+        probes: scenario.probes,
+        provenance: scenario.provenance,
+      }),
+    [scenario]
+  );
+
+  return (
+    <Panel
+      title="Unlearning Verifier"
+      kicker="A merchant leaves and the platform deletes their rows. But a model trained on those rows did not forget, and “we deleted your data” is a different claim from “our model no longer behaves as though it has your data”."
+    >
+      <Tabs
+        options={UNLEARNING_SCENARIOS.map((s) => ({ id: s.id, label: s.label }))}
+        active={scenarioId}
+        onSelect={setScenarioId}
+      />
+
+      <Verdict
+        tone={UNLEARNING_TONE[report.verdict]}
+        label={UNLEARNING_LABEL[report.verdict]}
+        detail={report.reason}
+      />
+
+      <ul style={styles.list}>
+        <Row
+          tone={report.attackerAdvantagePp >= 5 ? "bad" : "good"}
+          chip="advantage"
+          primary={`${report.attackerAdvantagePp.toFixed(1)}pp better than chance at distinguishing forgotten records`}
+          secondary={`${report.forget.flaggedAsMember}/${report.forget.n} forgotten records flagged as members, against ${report.control.flaggedAsMember}/${report.control.n} unseen ones.`}
+        />
+        <Row
+          tone={report.provenance === "auditor" ? "good" : "warn"}
+          chip={report.provenance}
+          primary={
+            report.provenance === "auditor"
+              ? "Probes selected by the auditor"
+              : "Probes supplied by the party being audited"
+          }
+          secondary="A control set chosen by the audited party can be chosen to pass. This is the same failure as a platform validating its own agents."
+        />
+        <Row
+          tone="neutral"
+          chip="sensitivity"
+          primary={
+            report.minimumDetectableEffectPp !== null
+              ? `Could have resolved an advantage of about ${report.minimumDetectableEffectPp.toFixed(1)}pp`
+              : "Sensitivity could not be established"
+          }
+          secondary="A null result is only worth what the test could have detected."
+        />
+      </ul>
+
+      <Note>
+        {scenario.note}
+        <br />
+        <br />
+        <strong style={{ color: "var(--rr-amber)" }}>Always stated: </strong>
+        {report.caveat}
+      </Note>
     </Panel>
   );
 }

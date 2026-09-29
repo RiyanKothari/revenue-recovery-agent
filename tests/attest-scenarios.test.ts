@@ -6,6 +6,7 @@ import {
   NUDGE_FIXTURES,
   NUDGE_SCENARIOS,
   REALITY_SCENARIOS,
+  UNLEARNING_SCENARIOS,
   SENTINEL_CLAIMS,
   SENTINEL_CONFIGS,
   SENTINEL_NOW,
@@ -16,6 +17,7 @@ import { screenMessage } from "../lib/message-claims";
 import { auditFairness } from "../lib/fairness-audit";
 import { watchCategory } from "../lib/cartel-watch";
 import { MATERIAL_FIDELITY_GAP_PP, certifyAgent } from "../lib/reality-check";
+import { verifyUnlearning } from "../lib/unlearning-verifier";
 import { ATTEMPT_CAP, normaliseCode } from "../lib/nudge-verification";
 
 /**
@@ -312,4 +314,51 @@ test("the refused scenario would have passed an aggregate review", () => {
     certifyAgent({ agent: scenario.agent, evidence: scenario.evidence }).decision,
     "refused"
   );
+});
+
+// --- Unlearning Verifier
+
+test("each unlearning scenario produces the verdict its caption promises", () => {
+  const expected: Record<string, string> = {
+    residual: "residual_influence",
+    clean: "no_detectable_influence",
+    platform_probes: "unverifiable_provenance",
+    underpowered: "insufficient",
+  };
+
+  for (const scenario of UNLEARNING_SCENARIOS) {
+    const report = verifyUnlearning({
+      merchantId: scenario.merchantId,
+      probes: scenario.probes,
+      provenance: scenario.provenance,
+    });
+    assert.equal(
+      report.verdict,
+      expected[scenario.id],
+      `${scenario.id} must read as ${expected[scenario.id]}`
+    );
+  }
+});
+
+test("the clean and platform scenarios differ only in who chose the probes", () => {
+  /**
+   * The panel's argument in one assertion: identical numbers, weaker
+   * conclusion. If the probe sets differed too, the demonstration would be
+   * about the data rather than about provenance.
+   */
+  const clean = UNLEARNING_SCENARIOS.find((s) => s.id === "clean")!;
+  const platform = UNLEARNING_SCENARIOS.find((s) => s.id === "platform_probes")!;
+
+  assert.deepEqual(
+    clean.probes.map((p) => [p.cohort, p.confidence]),
+    platform.probes.map((p) => [p.cohort, p.confidence]),
+    "the evidence is identical"
+  );
+  assert.notEqual(clean.provenance, platform.provenance);
+
+  const a = verifyUnlearning({ merchantId: "m", probes: clean.probes, provenance: "auditor" });
+  const b = verifyUnlearning({ merchantId: "m", probes: platform.probes, provenance: "platform" });
+
+  assert.equal(a.attackerAdvantagePp, b.attackerAdvantagePp, "same measurement");
+  assert.notEqual(a.verdict, b.verdict, "different conclusion");
 });
