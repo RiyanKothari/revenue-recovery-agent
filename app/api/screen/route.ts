@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { apiError, rateLimited } from "@/lib/api-errors";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { screenMessage } from "@/lib/message-claims";
-import { extractClaims } from "@/lib/claim-extractor";
+import { screenMessage, type Claim } from "@/lib/message-claims";
+import { claimsSchema, extractClaims } from "@/lib/claim-extractor";
 import { isScreenable, resolveOffer } from "@/lib/offer-config";
 import { resolveIdentity } from "@/lib/ledger-writer";
 import { resolveDecisionModel } from "@/lib/decision-model";
@@ -37,6 +37,22 @@ function safeDb() {
 
 interface ScreenRequest {
   message?: string;
+  /**
+   * Already-extracted claims, as an alternative to `message`.
+   *
+   * Extraction and adjudication are separate steps, and only the first needs
+   * a model. A caller that already knows what its message asserts — a
+   * template engine composing from structured fields, say — should not pay
+   * for a model call to rediscover it, and during a model outage the half
+   * that actually decides anything should still run.
+   *
+   * The trust boundary is worth naming: a caller supplying claims is
+   * describing its own outbound copy to a screen it asked for. It can lie,
+   * and lying only means screening something other than what it sends, which
+   * is not an attack on anyone but itself. The response says which path ran
+   * so nothing downstream can mistake one for the other.
+   */
+  claims?: Claim[];
   offerId?: string;
   merchantId?: string;
 }
@@ -54,8 +70,9 @@ export async function POST(request: Request) {
     return apiError("invalid_body", 400);
   }
 
-  if (!body.message?.trim() || !body.offerId?.trim()) {
-    return apiError("message_and_offer_id_required", 400);
+  const hasClaims = Array.isArray(body.claims);
+  if ((!body.message?.trim() && !hasClaims) || !body.offerId?.trim()) {
+    return apiError("offer_id_and_message_or_claims_required", 400);
   }
 
   if (!db) return apiError("database_unavailable", 503);
@@ -86,27 +103,41 @@ export async function POST(request: Request) {
       });
     }
 
-    const extraction = await extractClaims(body.message, resolveDecisionModel());
+    let claims: Claim[];
+    let model: string | null = null;
 
-    if (!extraction.ok) {
-      // "The screen did not run" is not "the screen passed", and it is also
-      // not "the copy is wrong". Nobody should go and rewrite a message
-      // because a model was unreachable.
-      return NextResponse.json({
-        decision: "hold",
-        held_by: "extraction",
-        offer_status: offer.status,
-        claims: [],
-        blocking: [],
-        summary: `Held: the message could not be screened (${extraction.reason}). A screen that cannot run is not a screen that passed.`,
-      });
+    if (hasClaims) {
+      const validated = claimsSchema.safeParse(body.claims);
+      if (!validated.success) {
+        const issue = validated.error.issues[0];
+        return apiError(
+          `invalid_claims: ${issue?.path.join(".") || "claims"}: ${issue?.message ?? "schema mismatch"}`,
+          400
+        );
+      }
+      claims = validated.data;
+    } else {
+      const extraction = await extractClaims(body.message!, resolveDecisionModel());
+
+      if (!extraction.ok) {
+        // "The screen did not run" is not "the screen passed", and it is also
+        // not "the copy is wrong". Nobody should go and rewrite a message
+        // because a model was unreachable.
+        return NextResponse.json({
+          decision: "hold",
+          held_by: "extraction",
+          offer_status: offer.status,
+          claims: [],
+          blocking: [],
+          summary: `Held: the message could not be screened (${extraction.reason}). A screen that cannot run is not a screen that passed.`,
+        });
+      }
+
+      claims = extraction.claims;
+      model = extraction.model;
     }
 
-    const result = screenMessage({
-      claims: extraction.claims,
-      facts: offer.facts!,
-      nowIso,
-    });
+    const result = screenMessage({ claims, facts: offer.facts!, nowIso });
 
     return NextResponse.json({
       ...result,
@@ -114,7 +145,10 @@ export async function POST(request: Request) {
       offer_status: offer.status,
       offer_id: body.offerId,
       merchant_id: merchantId,
-      model: extraction.model,
+      // Which half ran. A caller must never mistake "these are the claims you
+      // gave me" for "this is what a model found in your message".
+      claims_source: hasClaims ? "caller" : "extracted",
+      model,
     });
   } catch (err) {
     return apiError("screen_failed", 500, err);

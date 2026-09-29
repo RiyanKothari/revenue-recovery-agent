@@ -77,7 +77,14 @@ const claimSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const responseSchema = z.object({ claims: z.array(claimSchema) });
+/**
+ * Exported so the screen route validates caller-supplied claims with exactly
+ * the rules the extractor applies to the model. Two schemas would drift, and
+ * the looser one would become the way in.
+ */
+export const claimsSchema = z.array(claimSchema);
+
+const responseSchema = z.object({ claims: claimsSchema });
 
 export const EXTRACTION_SYSTEM_PROMPT = `You extract factual claims from a customer message. You do not judge them.
 

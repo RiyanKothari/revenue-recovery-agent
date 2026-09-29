@@ -210,3 +210,25 @@ test("a shape failure names the field, not just that something was required", ()
     assert.match(result.reason, /claims\.0\.text/);
   })();
 });
+
+test("caller-supplied claims are validated by the same schema as the model's", async () => {
+  /**
+   * The screen route accepts already-extracted claims so the adjudicator can
+   * run without a model. It validates them with `claimsSchema`, which is this
+   * same object — two schemas would drift, and the looser one would become
+   * the way in.
+   */
+  const { claimsSchema } = await import("../lib/claim-extractor");
+
+  assert.equal(claimsSchema.safeParse([{ type: "exclusivity", text: "just for you" }]).success, true);
+  assert.equal(claimsSchema.safeParse([{ type: "guilt_trip", text: "come back" }]).success, false);
+  assert.equal(claimsSchema.safeParse([{ type: "exclusivity" }]).success, false, "text is required");
+  assert.equal(claimsSchema.safeParse("not a list").success, false);
+
+  // The same omitted-null tolerance the model gets, for the same reason.
+  const omitted = claimsSchema.safeParse([
+    { type: "deadline", text: "expires in 24 hours", hoursFromSend: 24 },
+  ]);
+  assert.equal(omitted.success, true);
+  if (omitted.success) assert.equal((omitted.data[0] as any).absoluteIso, null);
+});
