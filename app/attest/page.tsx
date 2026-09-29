@@ -18,6 +18,7 @@ import { screenMessage, type AdjudicatedClaim } from "@/lib/message-claims";
 import { auditFairness, type FairnessFinding } from "@/lib/fairness-audit";
 import { watchCategory } from "@/lib/cartel-watch";
 import { certifyAgent, type SegmentFidelity } from "@/lib/reality-check";
+import { buildCalibration } from "@/lib/simulator-calibration";
 import type { VerificationOutcome } from "@/lib/nudge-verification";
 import { Note, Panel, Row, Tabs, Verdict, styles, type Tone } from "./ui";
 
@@ -397,6 +398,13 @@ function RealityPanel() {
     [scenario]
   );
 
+  /**
+   * The other half. Measuring the gap says the simulator is unusable;
+   * correcting by it is what makes it usable again — but only where the
+   * evidence could resolve the correction.
+   */
+  const calibration = useMemo(() => buildCalibration(result), [result]);
+
   const tone: Tone =
     result.decision === "refused" ? "bad" : result.decision === "certified" ? "good" : "warn";
 
@@ -434,6 +442,30 @@ function RealityPanel() {
           />
         ))}
       </ul>
+
+      <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--rr-border)" }}>
+        <Verdict
+          tone={calibration.coverage.corrected > 0 ? "info" : "warn"}
+          label={`Calibration — ${calibration.coverage.corrected} of ${calibration.coverage.total} segments usable`}
+          detail={calibration.summary}
+        />
+
+        <ul style={styles.list}>
+          {calibration.corrections.map((correction) => (
+            <Row
+              key={correction.segment}
+              tone={correction.basis === "measured" ? "good" : "warn"}
+              chip={correction.basis}
+              primary={
+                correction.adjustmentPp === 0
+                  ? `${correction.segment}: no adjustment`
+                  : `${correction.segment}: ${correction.adjustmentPp > 0 ? "−" : "+"}${Math.abs(correction.adjustmentPp).toFixed(1)}pp applied to future predictions`
+              }
+              secondary={correction.reason}
+            />
+          ))}
+        </ul>
+      </div>
 
       <Note>{scenario.note}</Note>
     </Panel>
