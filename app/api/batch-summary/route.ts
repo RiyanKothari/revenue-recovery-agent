@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { apiError } from "@/lib/api-errors";
-import { assessPower, computeLift, type ArmOutcome } from "@/lib/experiment";
+import { assessPower } from "@/lib/experiment";
+import { collectDeliveryStates, measureWithDelivery } from "@/lib/delivery-attrition";
 import { DEFAULT_POLICY } from "@/lib/policy";
 import { bucketOutcomes } from "@/lib/outcome-buckets";
 import { armSeries, causePerformance, dailySeries } from "@/lib/analytics";
@@ -22,18 +23,21 @@ export const dynamic = "force-dynamic";
  * than failure.
  */
 export async function GET() {
-  let events, outcomes, auditExceptions, decisionEventIds, assignments;
+  let events, outcomes, auditExceptions, decisionEventIds, assignments, deliveryEvidence;
 
   try {
     const db = getDb();
-    [events, outcomes, auditExceptions, decisionEventIds, assignments] = await Promise.all([
-      db.listEvents(),
-      db.listOutcomes(),
-      db.listStoppingRules(),
-      // Events the agent actually acted on, for an attempted-only rate.
-      db.listDecisionEventIds(),
-      db.listAssignments(),
-    ]);
+    [events, outcomes, auditExceptions, decisionEventIds, assignments, deliveryEvidence] =
+      await Promise.all([
+        db.listEvents(),
+        db.listOutcomes(),
+        db.listStoppingRules(),
+        // Events the agent actually acted on, for an attempted-only rate.
+        db.listDecisionEventIds(),
+        db.listAssignments(),
+        // What the provider later said about each message — see below.
+        db.listDeliveryEvidence(),
+      ]);
   } catch (err) {
     return apiError("summary_query_failed", 500, err);
   }
@@ -91,23 +95,31 @@ export async function GET() {
     recoveredEvents.map((o) => [o.revenue_event_id, o.recovered_amount_paise ?? 0])
   );
 
-  const arms: Record<"treated" | "control", ArmOutcome> = {
-    treated: { n: 0, converted: 0, recoveredPaise: 0 },
-    control: { n: 0, converted: 0, recoveredPaise: 0 },
-  };
+  /**
+   * The arms are built by the delivery-aware measurement rather than here,
+   * so the headline lift and the delivery breakdown cannot disagree about
+   * the denominator. `intentionToTreat` is the arms exactly as assigned —
+   * the same numbers this route computed inline before — and the module adds
+   * the second reading, on the messages the provider confirmed arrived.
+   *
+   * That second reading is the point. `recovery_actions.delivery_state` has
+   * been populated by Meta's authenticated delivery callback since it was
+   * built, and nothing has ever read it back: every figure on this dashboard
+   * treated an accepted send as a nudge received. See lib/delivery-attrition.ts
+   * for why the fix is to report both numbers rather than to quietly prefer
+   * the flattering one.
+   */
+  const delivery = measureWithDelivery({
+    assignments: assignments.map((a) => ({
+      revenueEventId: a.revenue_event_id,
+      arm: a.arm,
+    })),
+    deliveryStates: collectDeliveryStates(deliveryEvidence),
+    recoveredPaiseByEvent: recoveredById,
+  });
 
-  for (const assignment of assignments) {
-    const arm = assignment.arm === "control" ? "control" : "treated";
-    arms[arm].n += 1;
-
-    const recovered = recoveredById.get(assignment.revenue_event_id);
-    if (recovered !== undefined) {
-      arms[arm].converted += 1;
-      arms[arm].recoveredPaise += recovered;
-    }
-  }
-
-  const lift = computeLift(arms.treated, arms.control);
+  const arms = delivery.intentionToTreat;
+  const lift = arms.lift;
 
   /**
    * Whether this experiment could have detected the effect at all. Without
@@ -192,6 +204,25 @@ export async function GET() {
       control: arms.control,
       lift,
       power,
+    },
+
+    /**
+     * The same lift, read twice: as assigned, and among the customers a
+     * message provably reached. `intention_to_treat` above is the claimable
+     * number; this says how much of it undelivered messages are eating.
+     */
+    delivery: {
+      evidence_coverage: delivery.evidenceCoverage,
+      attrition: delivery.attrition,
+      per_protocol_status: delivery.perProtocolStatus,
+      per_protocol: delivery.perProtocol && {
+        treated: delivery.perProtocol.treated,
+        control: delivery.perProtocol.control,
+        lift: delivery.perProtocol.lift,
+      },
+      delivery_cost_pp: delivery.deliveryCostPp,
+      reading: delivery.reading,
+      caveat: delivery.caveat,
     },
     exceptions: auditExceptions.map((e) => ({
       revenue_event_id: e.revenue_event_id,

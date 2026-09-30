@@ -70,6 +70,28 @@ interface Summary {
       adequatelyPowered: boolean;
     };
   };
+  /**
+   * The same lift read a second way — see lib/delivery-attrition.ts. The arms
+   * above are as assigned, which counts a customer whose message Meta dropped
+   * as a customer who was nudged.
+   */
+  delivery: {
+    evidence_coverage: number;
+    attrition: {
+      delivered: number;
+      failed: number;
+      unconfirmed: number;
+      notAttempted: number;
+    };
+    per_protocol_status: "computed" | "unevidenced";
+    per_protocol: {
+      treated: { n: number; converted: number; recoveredPaise: number };
+      lift: { treatedRate: number; absoluteLiftPp: number; significant: boolean };
+    } | null;
+    delivery_cost_pp: number | null;
+    reading: string;
+    caveat: string;
+  };
 }
 
 interface FeedRow {
@@ -284,7 +306,9 @@ export default function DashboardPage() {
           </div>
 
           <div className="rr-rail">
-            {summary && <LiftCard experiment={summary.experiment} />}
+            {summary && (
+              <LiftCard experiment={summary.experiment} delivery={summary.delivery} />
+            )}
             {conformance && <ConformanceCard data={conformance} />}
             {conformance && <RulesCostCard data={conformance} />}
             {cache && <CacheCard stats={cache} />}
@@ -387,7 +411,13 @@ function FeedRowCard({ row }: { row: FeedRow }) {
  * The holdout result — the only number on this page that establishes
  * causation rather than attribution.
  */
-function LiftCard({ experiment }: { experiment: Summary["experiment"] }) {
+function LiftCard({
+  experiment,
+  delivery,
+}: {
+  experiment: Summary["experiment"];
+  delivery: Summary["delivery"];
+}) {
   const { treated, control, lift } = experiment;
   const hasArms = treated.n > 0 && control.n > 0;
 
@@ -477,8 +507,100 @@ function LiftCard({ experiment }: { experiment: Summary["experiment"] }) {
                 ` Confirming the observed ${Math.abs(lift.absoluteLiftPp).toFixed(1)}pp would need about ${experiment.power.controlNeededForObserved} control events.`}
             </div>
           )}
+
+          <DeliveryReading delivery={delivery} />
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * How much of the treated arm was actually reached.
+ *
+ * The bar above answers "what did deciding to nudge achieve", which is the
+ * only question a randomised holdout can answer and the only number the agent
+ * may claim. This answers the question underneath it: of the customers we
+ * decided to nudge, how many did a message actually reach — because Meta
+ * returns a message id for any recipient and then silently drops messages to
+ * numbers it will not deliver to.
+ *
+ * Rendered even when there is nothing to report, which is this deployment's
+ * present state. A blank space where the delivery evidence should be reads as
+ * "everything arrived"; the honest rendering says the provider has not been
+ * asked.
+ */
+function DeliveryReading({ delivery }: { delivery: Summary["delivery"] }) {
+  const { attrition } = delivery;
+
+  return (
+    <div
+      style={{
+        marginTop: 14,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopStyle: "solid",
+        borderTopColor: "var(--rr-border)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          letterSpacing: 0.3,
+          textTransform: "uppercase",
+          color: "var(--rr-text-2)",
+          marginBottom: 8,
+        }}
+      >
+        Delivery evidence
+      </div>
+
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
+        <span style={{ color: "var(--rr-green)" }}>{`${attrition.delivered} delivered`}</span>
+        <span style={{ color: "var(--rr-red)" }}>{`${attrition.failed} failed`}</span>
+        <span style={{ color: "var(--rr-text-2)" }}>
+          {`${attrition.unconfirmed} unconfirmed`}
+        </span>
+        {attrition.notAttempted > 0 && (
+          <span style={{ color: "var(--rr-text-2)" }}>
+            {`${attrition.notAttempted} not sent`}
+          </span>
+        )}
+      </div>
+
+      {/* The per-protocol figure, when the provider has said enough for it to
+          mean anything. Presented as a second reading of the same experiment
+          rather than a better one — the caveat is not optional garnish, it is
+          the reason this number is not the headline. */}
+      {delivery.per_protocol_status === "computed" && delivery.per_protocol ? (
+        <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.6 }}>
+          <div>
+            {`Among the ${delivery.per_protocol.treated.n} reached: `}
+            <strong>{`${(delivery.per_protocol.lift.treatedRate * 100).toFixed(1)}%`}</strong>
+            {` recovered, `}
+            <strong>{`${delivery.per_protocol.lift.absoluteLiftPp.toFixed(1)}pp`}</strong>
+            {` over holdout.`}
+          </div>
+          {delivery.delivery_cost_pp != null && (
+            <div style={{ color: "var(--rr-amber)", marginTop: 4 }}>
+              {`${delivery.delivery_cost_pp.toFixed(1)}pp of that is lost to messages that never arrived — a delivery problem, not a messaging one.`}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--rr-text-2)", lineHeight: 1.6 }}>
+          {/* The library's own words, not a second copy of them. A sentence
+              written here would drift from the one the API returns, and the
+              three unevidenced states it distinguishes — nothing sent,
+              nothing confirmed, partially confirmed — are exactly the
+              distinction a hardcoded caption would flatten. */}
+          {delivery.reading}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--rr-text-3)", lineHeight: 1.55 }}>
+        {delivery.caveat}
+      </div>
     </div>
   );
 }

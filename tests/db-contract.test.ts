@@ -794,6 +794,88 @@ forEachDriver("a failed delivery callback demotes the recorded status", async (d
   assert.equal(history[0].status, "failed", `${driver}: demoted from sent`);
 });
 
+forEachDriver("delivery evidence comes back keyed to the payment it chased", async (db, driver) => {
+  /**
+   * The read behind lib/delivery-attrition.ts. The join is the whole test:
+   * `recovery_actions` is keyed on the decision, and the measurement needs
+   * the event, so a driver that returned the decision id would silently match
+   * nothing and every send would count as unconfirmed.
+   */
+  const id = await newEvent(db, `devid_${driver}`);
+  const messageId = `${RUN}_wamidev_${driver}`;
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "gateway_error",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "sent",
+    attempt_number: 1,
+    provider_message_id: messageId,
+    delivery_state: "accepted",
+  });
+
+  const beforeCallback = (await db.listDeliveryEvidence()).filter(
+    (r) => r.revenue_event_id === id
+  );
+  assert.equal(beforeCallback.length, 1, `${driver}: the send is visible`);
+  assert.equal(beforeCallback[0].channel, "whatsapp", `${driver}: with its channel`);
+  assert.equal(
+    beforeCallback[0].delivery_state,
+    "accepted",
+    `${driver}: accepted is what a send evidences`
+  );
+
+  await db.recordDeliveryStatus({
+    provider_message_id: messageId,
+    state: "delivered",
+    at: new Date().toISOString(),
+  });
+
+  const afterCallback = (await db.listDeliveryEvidence()).filter(
+    (r) => r.revenue_event_id === id
+  );
+  assert.equal(
+    afterCallback[0].delivery_state,
+    "delivered",
+    `${driver}: the provider's later word is what the measurement reads`
+  );
+});
+
+forEachDriver("a send with no provider answer reads as null, not as a missing row", async (db, driver) => {
+  // The distinction the attrition counts rest on: an action with no delivery
+  // state is an unconfirmed message, and an action that is absent was never
+  // sent. A driver that dropped null rows would collapse the two.
+  const id = await newEvent(db, `devnull_${driver}`);
+
+  const decision = await db.insertDecision({
+    revenue_event_id: id,
+    root_cause: "insufficient_funds",
+    chosen_action: "send_retry_link_whatsapp",
+    rationale: "contract test",
+    bounded_by: [],
+  });
+
+  await db.insertRecoveryAction({
+    agent_decision_id: decision.id,
+    channel: "whatsapp",
+    action_type: "retry_link_sent",
+    status: "sent",
+    attempt_number: 1,
+  });
+
+  const rows = (await db.listDeliveryEvidence()).filter((r) => r.revenue_event_id === id);
+  assert.equal(rows.length, 1, `${driver}: the row is present`);
+  assert.equal(rows[0].delivery_state, null, `${driver}: and says nothing about delivery`);
+});
+
 forEachDriver("a scheduled send is claimed exactly once", async (db, driver) => {
   /**
    * Two overlapping cron ticks both read the row as due. Exactly one update

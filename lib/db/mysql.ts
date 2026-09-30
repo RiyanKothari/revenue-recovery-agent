@@ -1082,6 +1082,19 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
       }));
     },
 
+    async listDeliveryEvidence() {
+      const rows = await query<any>(
+        `select ad.revenue_event_id, ra.channel, ra.delivery_state
+           from recovery_actions ra
+           join agent_decisions ad on ad.id = ra.agent_decision_id`
+      );
+      return rows.map((r) => ({
+        revenue_event_id: r.revenue_event_id,
+        channel: r.channel,
+        delivery_state: r.delivery_state ?? null,
+      }));
+    },
+
     async listConsent() {
       const rows = await query<any>("select customer_id, dnd from customer_consent");
       return rows.map((r) => ({ customer_id: r.customer_id, dnd: bool(r.dnd) }));

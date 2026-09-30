@@ -442,6 +442,24 @@ export interface RecoveryDb {
    * to live.
    */
   recordDeliveryStatus(update: DeliveryStatusUpdate): Promise<string | null>;
+  /**
+   * What the provider last said about every message this deployment sent,
+   * keyed to the payment it chased — see lib/delivery-attrition.ts.
+   *
+   * Separate from `listRecoveryActions` rather than folded into it, because
+   * that method feeds the conformance verifier and is keyed on the decision
+   * rather than the event. Widening it to carry a join and two more columns
+   * would change the verifier's input to serve a reader that only wants the
+   * delivery state.
+   *
+   * The channel comes along because only some channels have a provider that
+   * calls back at all. An email with no delivery state is not an unconfirmed
+   * delivery, it is a channel that was never going to confirm, and the
+   * distinction has to survive as far as the caller.
+   */
+  listDeliveryEvidence(): Promise<
+    { revenue_event_id: string; channel: string; delivery_state: string | null }[]
+  >;
 
   // --- scheduled sends
   /** Sends whose time has come and which have not yet been dispatched. */
