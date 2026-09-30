@@ -324,6 +324,54 @@ test("an empty batch reports nothing rather than dividing by zero", () => {
   assert.equal(measured.intentionToTreat.treated.n, 0);
 });
 
+// --- the wiring, in the shape the route actually assembles it
+
+test("rows as the database returns them survive the trip into the measurement", () => {
+  /**
+   * The seam worth pinning. `listDeliveryEvidence` returns snake_case rows
+   * keyed on `revenue_event_id`, `listAssignments` does too, and
+   * `measureWithDelivery` wants `revenueEventId` — so the route renames them
+   * on the way in. A rename that went wrong would not throw or fail to
+   * typecheck: every lookup would simply miss, every send would classify as
+   * `not_attempted`, and the dashboard would report a fully-audited batch in
+   * which nothing was ever sent. Which is, inconveniently, also what the real
+   * batch legitimately looks like.
+   */
+  const evidenceRows = [
+    { revenue_event_id: "evt_1", channel: "whatsapp", delivery_state: "delivered" },
+    { revenue_event_id: "evt_2", channel: "whatsapp", delivery_state: "failed" },
+    { revenue_event_id: "evt_2", channel: "email", delivery_state: null },
+    { revenue_event_id: "evt_3", channel: "whatsapp", delivery_state: null },
+  ];
+
+  const assignmentRows = [
+    { revenue_event_id: "evt_1", arm: "treated" },
+    { revenue_event_id: "evt_2", arm: "treated" },
+    { revenue_event_id: "evt_3", arm: "treated" },
+    { revenue_event_id: "evt_4", arm: "control" },
+  ];
+
+  const measured = measureWithDelivery({
+    // Exactly the mapping app/api/batch-summary/route.ts performs.
+    assignments: assignmentRows.map((a) => ({
+      revenueEventId: a.revenue_event_id,
+      arm: a.arm,
+    })),
+    deliveryStates: collectDeliveryStates(evidenceRows),
+    recoveredPaiseByEvent: new Map([["evt_1", 250_000]]),
+  });
+
+  assert.equal(measured.attrition.delivered, 1, "evt_1 was reached");
+  assert.equal(measured.attrition.failed, 1, "evt_2's only message failed");
+  assert.equal(measured.attrition.notAttempted, 1, "evt_3 never left the process");
+  assert.equal(measured.attrition.unconfirmed, 0);
+
+  assert.equal(measured.intentionToTreat.treated.n, 3);
+  assert.equal(measured.intentionToTreat.treated.converted, 1);
+  assert.equal(measured.intentionToTreat.treated.recoveredPaise, 250_000);
+  assert.equal(measured.intentionToTreat.control.n, 1);
+});
+
 // --- fixtures
 
 /** `count` treated events all sharing one delivery state, `converted` of which paid. */
