@@ -345,7 +345,7 @@ export function measureWithDelivery(params: {
       perProtocol: null,
       perProtocolStatus: "unevidenced",
       deliveryCostPp: null,
-      reading: `Lift is reported on the arms as assigned, which is the causal estimate. It cannot yet be separated into "the nudge does not work" and "the nudge does not arrive": ${why} Note that the assigned-arm figure already absorbs every undelivered message, so it is a floor.`,
+      reading: `Lift is reported on the arms as assigned, which is the causal estimate. It cannot yet be separated into "the nudge does not work" and "the nudge does not arrive". ${why} Note that the assigned-arm figure already absorbs every undelivered message, so it is a floor.`,
     };
   }
 
