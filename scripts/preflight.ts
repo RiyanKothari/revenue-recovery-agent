@@ -484,6 +484,68 @@ async function checkWhatsApp() {
   });
 
   await checkWhatsAppTemplate(token);
+  await checkDeliveryCallback(token);
+}
+
+/**
+ * Whether a delivery status can get back to us.
+ *
+ * Everything above this checks that a message can go out. None of it checks
+ * that Meta's answer can come back, and the two fail completely differently:
+ * a send failure is loud, while a delivery callback that never arrives is
+ * indistinguishable from a deployment that has not sent anything yet. The
+ * dashboard's delivery panel reads `unevidenced` in both cases.
+ *
+ * The rules themselves live in lib/whatsapp-callback-readiness.ts, beside the
+ * signature check they describe, for the same reason the send-safety check
+ * above imports `isDryRun` rather than reimplementing it.
+ */
+async function checkDeliveryCallback(token: string | undefined) {
+  const { assessCallbackReadiness, readSubscription } = await import(
+    "../lib/whatsapp-callback-readiness"
+  );
+  const { resolveBaseUrl } = await import("../lib/app-secret");
+
+  for (const check of assessCallbackReadiness({
+    appSecret: process.env.WHATSAPP_APP_SECRET,
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN,
+    baseUrl: resolveBaseUrl(),
+  })) {
+    record(check);
+  }
+
+  const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+
+  // The one precondition only Meta can answer. Skipped rather than guessed
+  // when there is nothing to ask with.
+  if (!token || !wabaId) {
+    record({
+      name: "delivery callback subscription",
+      status: "skip",
+      detail: "needs WHATSAPP_BUSINESS_ACCOUNT_ID and an access token to check",
+      fix: "Confirm manually in Meta's app dashboard → WhatsApp → Configuration.",
+    });
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${wabaId}/subscribed_apps`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body: any = await res.json();
+    const check = readSubscription({ ok: res.ok, body });
+
+    // An expired token explains the lookup better than the generic message.
+    const { expiredToken } = readMetaError(body);
+    record(expiredToken ? { ...check, fix: TOKEN_FIX } : check);
+  } catch (err: any) {
+    record({
+      name: "delivery callback subscription",
+      status: "warn",
+      detail: err?.message ?? "unreachable",
+      fix: "Confirm manually in Meta's app dashboard → WhatsApp → Configuration.",
+    });
+  }
 }
 
 /**
