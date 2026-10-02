@@ -170,3 +170,17 @@ test("optimism outranks insufficiency, because a known flaw beats an unknown one
 
   assert.equal(result.decision, "refused");
 });
+
+test("an inconclusive segment names its sensitivity in words a rate can take", () => {
+  /**
+   * Forty a side clears the evidence floor but cannot resolve a five point
+   * gap, so the verdict is insufficient and the reason has to say how coarse
+   * the comparison was. That phrase now comes from describeSensitivity rather
+   * than a hand-built `.toFixed(1)}pp` that printed "?pp" for a missing value.
+   */
+  const result = assessSegment(evidence("small", [40, 20], [40, 20]));
+
+  assert.equal(result.verdict, "insufficient");
+  assert.doesNotMatch(result.reason, /\?pp|NaN|undefined/);
+  assert.match(result.reason, /could only have resolved about \d+\.\dpp/);
+});

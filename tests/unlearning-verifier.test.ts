@@ -206,3 +206,19 @@ test("materiality is adjustable and changes what counts as a leak", () => {
   });
   assert.equal(strict.verdict, "residual_influence");
 });
+
+test("an insufficient verdict names its sensitivity in words a rate can take", () => {
+  /**
+   * The reason used to be built by hand around `.toFixed(1)}pp` and fell back
+   * to a literal "?pp" when no sensitivity existed. It now goes through
+   * describeSensitivity, so it reads either "about Npp" or says plainly that
+   * the audit could resolve nothing — never a question mark, never above 100.
+   */
+  const probes = [...cohort("forget", 40, 0.2, 0.8), ...cohort("control", 40, 0.2, 0.8)];
+
+  const report = verifyUnlearning({ merchantId: "m1", probes, provenance: "auditor" });
+
+  assert.equal(report.verdict, "insufficient");
+  assert.doesNotMatch(report.reason, /\?pp|NaN|undefined/);
+  assert.match(report.reason, /advantage of (about \d+\.\dpp|no difference that could exist|an amount it cannot establish)/);
+});
