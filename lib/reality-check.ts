@@ -1,4 +1,9 @@
-import { assessPower, computeLift, type ArmOutcome } from "./statistics";
+import {
+  assessPower,
+  computeLift,
+  describeSensitivity,
+  type ArmOutcome,
+} from "./statistics";
 
 /**
  * Reality Check — grading a certification against reality instead of against
@@ -161,7 +166,7 @@ export function assessSegment(
   return {
     ...base,
     verdict: "insufficient",
-    reason: `No gap detected, but this comparison could only have resolved about ${power.minimumDetectableEffectPp?.toFixed(1) ?? "?"}pp, coarser than the ${materialGapPp}pp treated as material. A material gap could be present and invisible.`,
+    reason: `No gap detected, but this comparison could only have resolved ${describeSensitivity(power.minimumDetectableEffectPp)}, coarser than the ${materialGapPp}pp treated as material. A material gap could be present and invisible.`,
   };
 }
 

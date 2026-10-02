@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { describeSensitivity } from "@/lib/statistics";
 import {
   CARTEL_SCENARIOS,
   FAIRNESS_SCENARIOS,
@@ -544,7 +545,7 @@ function UnlearningPanel() {
           chip="sensitivity"
           primary={
             report.minimumDetectableEffectPp !== null
-              ? `Could have resolved an advantage of about ${report.minimumDetectableEffectPp.toFixed(1)}pp`
+              ? `Could have resolved an advantage of ${describeSensitivity(report.minimumDetectableEffectPp)}`
               : "Sensitivity could not be established"
           }
           secondary="A null result is only worth what the test could have detected."

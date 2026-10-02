@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import type { LiftResult, PowerResult } from "@/lib/statistics";
 import { MoneyRiver, type Bucket } from "./money-river";
 import { CausePerformance, RecoveryTrend, type ArmPoint, type CauseRow, type DayPoint } from "./trend";
 import {
@@ -55,20 +56,17 @@ interface Summary {
     holdout_percent: number;
     treated: { n: number; converted: number; recoveredPaise: number };
     control: { n: number; converted: number; recoveredPaise: number };
-    lift: {
-      treatedRate: number;
-      controlRate: number;
-      absoluteLiftPp: number;
-      ci95Pp: [number, number] | null;
-      incrementalPaise: number | null;
-      significant: boolean;
-      caveat?: string;
-    };
-    power: {
-      minimumDetectableEffectPp: number | null;
-      controlNeededForObserved: number | null;
-      adequatelyPowered: boolean;
-    };
+    /**
+     * The route serialises these two straight out of `lib/statistics.ts`, so
+     * they are imported rather than restated. They were restated, and the copy
+     * had already fallen behind: it was missing `relativeLift` entirely, and a
+     * field added to the real `LiftResult` would not have shown up here as a
+     * type error — only as a value the dashboard silently never read. The
+     * statistics module has no Node-only imports precisely so a client
+     * component can share its types.
+     */
+    lift: LiftResult;
+    power: PowerResult;
   };
   /**
    * The same lift read a second way — see lib/delivery-attrition.ts. The arms
@@ -488,6 +486,17 @@ function LiftCard({
           <div style={{ fontSize: 11.5, color: "var(--rr-text-2)", marginTop: 10 }}>
             {lift.caveat ??
               "Recovery the agent caused, over what these events would have returned untouched."}
+            {/* The number behind the chip. A green chip is a conclusion; this
+                is the evidence for it, and it is cheap to show now that the
+                verdict comes from an exact test rather than from whether an
+                approximate interval happened to clear zero. */}
+            {lift.pValue != null && (
+              <span className="rr-mono" style={{ marginLeft: 6, color: "var(--rr-text-3)" }}>
+                {lift.pValue < 0.001
+                  ? "(Fisher exact p < 0.001)"
+                  : `(Fisher exact p = ${lift.pValue.toFixed(3)})`}
+              </span>
+            )}
           </div>
 
           {/* Why a null result is null. An underpowered experiment reporting
@@ -502,7 +511,9 @@ function LiftCard({
                 lineHeight: 1.55,
               }}
             >
-              {`Underpowered: with ${control.n} control events this holdout can only resolve an effect of ${experiment.power.minimumDetectableEffectPp.toFixed(1)}pp or larger.`}
+              {experiment.power.resolvesAnyPossibleEffect
+                ? `Underpowered: with ${control.n} control events this holdout can only resolve an effect of ${experiment.power.minimumDetectableEffectPp.toFixed(1)}pp or larger.`
+                : `Underpowered: with ${control.n} control events this holdout cannot resolve any difference that could exist — its sensitivity is coarser than the full 100pp two rates can differ by.`}
               {experiment.power.controlNeededForObserved != null &&
                 ` Confirming the observed ${Math.abs(lift.absoluteLiftPp).toFixed(1)}pp would need about ${experiment.power.controlNeededForObserved} control events.`}
             </div>

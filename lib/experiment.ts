@@ -47,6 +47,8 @@ export function assignArm(revenueEventId: string, policy: RecoveryPolicy): Arm {
 export {
   computeLift,
   assessPower,
+  fisherExactTwoSided,
+  describeSensitivity,
   type ArmOutcome,
   type LiftResult,
   type PowerResult,

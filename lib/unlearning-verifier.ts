@@ -1,4 +1,9 @@
-import { assessPower, computeLift, type ArmOutcome } from "./statistics";
+import {
+  assessPower,
+  computeLift,
+  describeSensitivity,
+  type ArmOutcome,
+} from "./statistics";
 
 /**
  * The Unlearning Verifier — did the model actually forget?
@@ -258,7 +263,7 @@ export function verifyUnlearning(params: {
     return {
       ...shaped,
       verdict: "insufficient",
-      reason: `No residual influence found, but this audit could only have resolved an advantage of about ${power.minimumDetectableEffectPp?.toFixed(1) ?? "?"}pp, coarser than the ${material}pp treated as material. Residual influence could be present and invisible to a test this size.`,
+      reason: `No residual influence found, but this audit could only have resolved an advantage of ${describeSensitivity(power.minimumDetectableEffectPp)}, coarser than the ${material}pp treated as material. Residual influence could be present and invisible to a test this size.`,
     };
   }
 

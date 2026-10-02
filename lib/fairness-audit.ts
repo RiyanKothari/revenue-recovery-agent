@@ -1,4 +1,9 @@
-import { assessPower, computeLift, type ArmOutcome } from "./statistics";
+import {
+  assessPower,
+  computeLift,
+  describeSensitivity,
+  type ArmOutcome,
+} from "./statistics";
 import { groupBy, isFavourable, type OfferRecord } from "./offer-ledger";
 
 /**
@@ -197,7 +202,7 @@ export function auditFairness(params: {
     } else {
       verdict = "underpowered";
       reason =
-        `No disparity detected, but this comparison could only have resolved a gap of about ${power.minimumDetectableEffectPp?.toFixed(1) ?? "?"}pp, which is coarser than the ${materialGapPp}pp treated as material. ` +
+        `No disparity detected, but this comparison could only have resolved a gap of ${describeSensitivity(power.minimumDetectableEffectPp)}, which is coarser than the ${materialGapPp}pp treated as material. ` +
         "A material disparity could be present and invisible here. This is a fact about the sample, not about the merchant.";
     }
 
