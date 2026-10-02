@@ -69,9 +69,9 @@ real webhook route.
 | | |
 |---|---|
 | Recovery rate | **25.7%** overall, 33.2% of events acted on |
-| Measured lift vs holdout | **+21.0pp**, 95% CI [14.1, 27.9] |
-| Incremental recovery | **₹7,56,982** |
-| Safety conformance | **5,346 checks, 0 violations** across 7 invariants |
+| Measured lift vs holdout | **+21.0pp**, 95% CI [13.3, 27.3], Fisher exact p < 0.001 |
+| Incremental recovery | **₹7,56,499** |
+| Safety conformance | **5,351 checks, 0 violations** across 7 invariants |
 | Red team | 10 hostile inputs against live defences, all refused |
 | Model economy | **11 model calls** served 908 decisions |
 | Tests | **434**, including a 34 case dual-driver database contract suite |
