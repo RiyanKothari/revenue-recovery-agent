@@ -12,7 +12,7 @@ import {
   SENTINEL_NOW,
   createFixtureVerifierDb,
 } from "../lib/attest-scenarios";
-import { verifyNudge } from "../lib/nudge-verify-service";
+import { VERIFY_PATH, verifyNudge } from "../lib/nudge-verify-service";
 import { screenMessage } from "../lib/message-claims";
 import { auditFairness } from "../lib/fairness-audit";
 import { watchCategory } from "../lib/cartel-watch";
@@ -361,4 +361,21 @@ test("the clean and platform scenarios differ only in who chose the probes", () 
 
   assert.equal(a.attackerAdvantagePp, b.attackerAdvantagePp, "same measurement");
   assert.notEqual(a.verdict, b.verdict, "different conclusion");
+});
+
+test("the demo's genuine message names the page real messages send customers to", () => {
+  /**
+   * The genuine scenario once read "Check it at /attest" — the operator
+   * console — while every real nudge pointed at the customer page. A judge
+   * following the demo would have been sent to the wrong screen. The path is
+   * owned by nudge-verify-service, which builds real messages; this pins the
+   * demo copy to it.
+   */
+  const genuine = NUDGE_SCENARIOS.find((s) => s.id === "genuine")!;
+
+  assert.ok(
+    genuine.messageText.includes(`Check it at ${VERIFY_PATH} `),
+    `demo copy must name ${VERIFY_PATH}: ${genuine.messageText}`
+  );
+  assert.doesNotMatch(genuine.messageText, /\/attest/);
 });

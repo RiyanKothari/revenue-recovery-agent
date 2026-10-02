@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { describeSensitivity } from "@/lib/statistics";
+import { Header } from "../dashboard/ui";
 import {
   CARTEL_SCENARIOS,
   FAIRNESS_SCENARIOS,
@@ -56,7 +57,9 @@ import { Note, Panel, Row, Tabs, Verdict, styles, type Tone } from "./ui";
 
 export default function AttestConsole() {
   return (
-    <main style={page}>
+    <>
+    <Header />
+    <main id="main" style={page}>
       <header style={header}>
         <h1 style={title}>Attest</h1>
         <p style={lede}>
@@ -79,6 +82,7 @@ export default function AttestConsole() {
         calls. The fixtures are the inputs, never the outcomes.
       </footer>
     </main>
+    </>
   );
 }
 
@@ -164,7 +168,15 @@ function NudgePanel() {
         </div>
       )}
 
-      <Note>{scenario.note}</Note>
+      <Note>
+        {scenario.note}{" "}
+        {/* The panel simulates the check inline; this is the real page the
+            message sends a customer to, deliberately plain and unbranded. */}
+        <a href="/verify" target="_blank" rel="noopener noreferrer">
+          Open the page a customer actually lands on
+        </a>
+        .
+      </Note>
     </Panel>
   );
 }

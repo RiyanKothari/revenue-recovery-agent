@@ -1,4 +1,13 @@
 import type { RecoveryDb } from "./db";
+
+/**
+ * Where a customer checks a message. Every outgoing nudge names this path, so
+ * it is a constant rather than a string typed into each place that mentions
+ * it — the Attest demo once told judges to "check it at /attest", the operator
+ * console, while real messages pointed at the customer page. A test pins the
+ * demo copy to this value.
+ */
+export const VERIFY_PATH = "/verify";
 import { resolveBaseUrl, resolveNudgeSecret } from "./app-secret";
 import { resolveIdentity } from "./ledger-writer";
 import {
@@ -124,7 +133,7 @@ export async function issueVerification(
      */
     void result;
 
-    return { code, url: `${baseUrl}/verify` };
+    return { code, url: `${baseUrl}${VERIFY_PATH}` };
   } catch (err: any) {
     console.error(
       "[nudge-verify] could not issue a verification code, sending without one:",

@@ -103,7 +103,7 @@ export const NUDGE_SCENARIOS: NudgeScenario[] = [
     id: "genuine",
     label: "Genuine message",
     messageText:
-      "Kettle & Co: your payment of ₹2,499 didn't go through. Tap to try again: rzp.io/l/9fK2qd\nDon't trust this message. Check it at /attest — code K7MQ-2X4B",
+      "Kettle & Co: your payment of ₹2,499 didn't go through. Tap to try again: rzp.io/l/9fK2qd\nDon't trust this message. Check it at /verify — code K7MQ-2X4B",
     code: "K7MQ-2X4B",
     trueAmount: "2499",
     note: "Sent by the recovery agent against a real failed payment.",

@@ -107,6 +107,7 @@ const NAV = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/policy", label: "Policy Lab" },
   { href: "/dashboard/redteam", label: "Red Team" },
+  { href: "/attest", label: "Attest" },
 ];
 
 export type FeedStatus = "connecting" | "live" | "offline";
@@ -125,7 +126,7 @@ export function Header({ status }: { status?: FeedStatus }) {
       <span className="rr-brand">Revenue Recovery — Live</span>
       <span className="rr-pill rr-pill--test rr-mono">Test mode</span>
 
-      <nav className="rr-nav" aria-label="Dashboard sections">
+      <nav className="rr-nav" aria-label="Sections">
         {NAV.map((item) => (
           <Link
             key={item.href}

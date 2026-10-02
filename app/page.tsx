@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 
-// The dashboard is the only user-facing surface in this project, so "/"
-// should land there rather than 404.
+// The dashboard is the operator's front door, and every other surface
+// (Policy Lab, Red Team, Attest) is one click from its header, so "/" lands
+// there rather than 404.
 export default function Home() {
   redirect("/dashboard");
 }
