@@ -735,13 +735,23 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
        * platform that spreads a burst across instances never lets any single
        * one reach its limit.
        *
-       * The read back is a second statement, because MySQL has no RETURNING.
-       * Both run on one pooled connection so they cannot be separated by a
-       * pool handover, but another instance can still increment between them.
-       * That can only make the count read HIGHER than this request's own,
-       * never lower, so the limiter errs toward refusing early under
-       * contention. For shedding load from a public endpoint that is the
-       * direction to be wrong in.
+       * MySQL has no RETURNING, so the count comes back through
+       * `LAST_INSERT_ID(expr)`: wrapping the new count in it makes the
+       * statement's own OK packet carry that value as `insertId`. It is
+       * per-statement and per-connection, so no other caller's increment can
+       * land between the write and the answer.
+       *
+       * It used to be read back with a separate SELECT, on the reasoning that
+       * a concurrent increment could only make the count read higher, which
+       * errs toward refusing. True, but it broke the contract both drivers
+       * share: under ten concurrent callers in CI, two were told 4 and two
+       * were told 10, while nobody was told 3 or 9. Postgres's RETURNING gives
+       * each caller its own count, and a repository interface whose two
+       * implementations answer differently under load is not one interface.
+       *
+       * `reset_at` is still read back, because it does not change within a
+       * window — only the first request after expiry moves it, and every
+       * caller in the new window then reads that same value.
        *
        * MySQL evaluates ON DUPLICATE KEY assignments left to right, so
        * `reset_at` still holds the old value when `count` is computed from
@@ -754,11 +764,11 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
 
       const conn = await pool.getConnection();
       try {
-        await conn.execute(
+        const [written] = await conn.execute(
           `insert into rate_limit_windows (bucket, \`count\`, reset_at)
-           values (?, 1, ?)
+           values (?, last_insert_id(1), ?)
            on duplicate key update
-             \`count\` = if(reset_at <= ?, 1, \`count\` + 1),
+             \`count\` = last_insert_id(if(reset_at <= ?, 1, \`count\` + 1)),
              reset_at = if(reset_at <= ?, ?, reset_at)`,
           [bucket, resetDt, nowDt, nowDt, resetDt]
         );
@@ -767,7 +777,10 @@ export function createMysqlDb(connectionUri: string): RecoveryDb {
           [bucket]
         );
         const row = (rows as any[])[0];
-        return { count: Number(row.count), resetAt: iso(row.reset_at) };
+        const own = Number((written as any).insertId);
+        // Zero would mean LAST_INSERT_ID was not set, which this statement
+        // always does; fall back to the shared read rather than report 0.
+        return { count: own > 0 ? own : Number(row.count), resetAt: iso(row.reset_at) };
       } finally {
         conn.release();
       }

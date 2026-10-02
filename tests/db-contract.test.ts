@@ -102,6 +102,7 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
   const MATCH = "like 'ctr%'";
 
   const statements = [
+    `delete from nudge_verifications where revenue_event_id in (select id from revenue_events where razorpay_event_id ${MATCH})`,
     `delete from outcomes where revenue_event_id in (select id from revenue_events where razorpay_event_id ${MATCH})`,
     `delete from recovery_actions where agent_decision_id in (select id from agent_decisions where revenue_event_id in (select id from revenue_events where razorpay_event_id ${MATCH}))`,
     `delete from experiment_assignments where revenue_event_id in (select id from revenue_events where razorpay_event_id ${MATCH})`,
@@ -111,6 +112,10 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
     `delete from customer_consent where customer_id ${MATCH}`,
     `delete from decision_cache where cache_key ${MATCH}`,
     `delete from rate_limit_windows where bucket ${MATCH}`,
+    // Offers have no event to hang off, so the prefix is on their own ids.
+    // Missing from this list, they accumulated: 42 rows in a local MySQL
+    // after a day of runs, found by scanning every text column for the prefix.
+    `delete from merchant_offers where offer_id ${MATCH}`,
   ];
 
   if (driver === "postgres") {
@@ -146,6 +151,7 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
             .join(",")})`
         );
       }
+      await conn.query(`delete from nudge_verifications where revenue_event_id in (${list})`);
       await conn.query(`delete from outcomes where revenue_event_id in (${list})`);
       await conn.query(`delete from experiment_assignments where revenue_event_id in (${list})`);
       await conn.query(`delete from agent_decisions where revenue_event_id in (${list})`);
@@ -155,6 +161,7 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
     await conn.query(`delete from customer_consent where customer_id ${MATCH}`);
     await conn.query(`delete from decision_cache where cache_key ${MATCH}`);
     await conn.query(`delete from rate_limit_windows where bucket ${MATCH}`);
+    await conn.query(`delete from merchant_offers where offer_id ${MATCH}`);
   } finally {
     await conn.end();
   }
@@ -163,8 +170,13 @@ async function cleanup(url: string, driver: "postgres" | "mysql") {
 after(async () => {
   for (const t of targets) {
     if (!t.db) continue;
+    // A failed cleanup fails the run. It used to be logged and swallowed,
+    // which is how a foreign key added after this list was written left test
+    // rows behind on every run without a single red tick.
     await cleanup(t.name === "postgres" ? PG_URL : MY_URL, t.name as "postgres" | "mysql").catch(
-      (err) => console.error(`[contract] cleanup failed on ${t.name}:`, err?.message ?? err)
+      (err) => {
+        throw new Error(`[contract] cleanup failed on ${t.name}: ${err?.message ?? err}`);
+      }
     );
     await t.db.close().catch(() => {});
   }
