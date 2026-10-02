@@ -89,3 +89,15 @@ The dashboard separates "could not resolve" (DND, cooldown, retry ceiling, unrec
 
 ## The dashboard is ledger-first, not metrics-first
 The live reasoning feed is the widest column and the visual anchor; the summary stats sit compact above it. The UI also never prints an internal identifier — actions read "Sent via WhatsApp", stopping reasons read "Reached cooldown window". Reasoning: the moment that proves this is a real agent is watching it reason about a specific failure and say why, in words. Metrics prove the outcome; the feed proves the mechanism, and the mechanism is what's actually novel here.
+
+## Significance comes from an exact test, not from an interval clearing zero
+
+`computeLift` used a textbook Wald interval and called a result significant whenever it excluded zero. Wald builds its standard error from the observed rates, so an arm at 0% or 100% contributes no variance at all: one recovered treated event against one unrecovered control event produced a 95% interval of [+100pp, +100pp] and `significant: true`. The fairness audit, reality check and unlearning verifier were shielded by their own 30-per-arm floors; the dashboard's headline chip was not, and the documented demo batch shape (about fifty events at a 10% holdout) put a green "significant" chip on a split whose exact probability under chance was 0.31.
+
+Three changes, each answering a different question with the right tool:
+
+- **Whether there is an effect** is Fisher's exact test (`fisherExactTwoSided`), which enumerates every table with the observed margins. It is exact at any sample size, so there is no regime where it quietly stops applying and no threshold to argue about.
+- **How large the effect is** is an Agresti-Caffo interval, which adds one notional success and one notional failure per arm so no rate can sit on a boundary. Where it still contradicts the exact test — only ever on very small arms — the interval is withheld with a caveat, because an interval excluding zero beside "not significant" gets read as whichever half flatters the result.
+- **What the test could have seen** (`assessPower`) evaluates variance at the pooled rate. Evaluated at the control rate alone it went blank exactly when the control arm had recovered nobody, which is the moment the "this holdout is too small" explanation matters most.
+
+On tiny arms the minimum detectable effect can exceed 100pp, which is a way of saying the comparison can resolve nothing. `describeSensitivity` says that in words instead of printing an impossible percentage, and every report that names a sensitivity goes through it.

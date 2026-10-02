@@ -2,6 +2,19 @@ import { getDb } from "./db";
 import { logAudit } from "./audit";
 
 /**
+ * How long after a failure a successful payment on the same order still
+ * counts as this pipeline's recovery: 24 hours.
+ *
+ * Named and exported rather than left as a local. The line it replaces called
+ * it "configurable", which it never was, and a reader trusting that comment
+ * would have gone looking for a setting that does not exist. Exported so the
+ * tests pin the boundary against the same number the code uses, not a copy
+ * of it. Changing it changes what the dashboard's recovered total means,
+ * which is why it is a code change and not a knob.
+ */
+export const ATTRIBUTION_WINDOW_MINUTES = 60 * 24;
+
+/**
  * Called from the webhook when a previously-failed order is paid.
  * Without this, "amount recovered" is an assertion, not a measurement —
  * this is what makes the number defensible.
@@ -38,7 +51,7 @@ export async function attributeRecovery(params: {
    * It also made "average time to recovery" measure the age of the batch
    * rather than the speed of the agent.
    */
-  const windowMinutes = 60 * 24; // 24h attribution window, configurable
+  const windowMinutes = ATTRIBUTION_WINDOW_MINUTES;
   const recoveredAt = params.recoveredAtIso
     ? new Date(params.recoveredAtIso)
     : new Date();
