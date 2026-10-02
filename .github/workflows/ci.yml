@@ -5,12 +5,12 @@
 # the conformance verifier exists to catch elsewhere in this project: a check
 # nobody can see run is indistinguishable from one that isn't running.
 #
-# No database is provisioned here on purpose. The unit suite is hermetic —
+# No database is provisioned for the `test` job on purpose. The unit suite is hermetic —
 # every module that touches the database takes it as an injected dependency,
 # which is why that was worth doing — and the dual-driver contract suite skips
-# itself without DATABASE_URL rather than failing. A green tick here means the
-# logic holds; it does not claim the drivers were exercised, and the contract
-# suite says so when it skips.
+# itself without DATABASE_URL rather than failing. A green `test` means the
+# logic holds; the drivers are exercised by the separate `contract` job below,
+# which runs real Postgres and MySQL and refuses to skip either.
 name: CI
 
 on:
@@ -53,3 +53,52 @@ jobs:
           # credentials — anything that reaches for a live service at build
           # time is a module doing work at import, which is its own bug.
           NEXT_TELEMETRY_DISABLED: "1"
+
+  # The drivers, against real engines. Separate from `test` so the unit suite
+  # stays hermetic and a database outage cannot redden a logic change. This job
+  # exists because the job above deliberately cannot claim the drivers work,
+  # and the submission should not claim what no check has shown.
+  contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rr
+          POSTGRES_PASSWORD: local
+          POSTGRES_DB: revenue_recovery
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rr"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: local
+          MYSQL_DATABASE: revenue_recovery
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -plocal"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      TEST_POSTGRES_URL: postgresql://rr:local@127.0.0.1:5433/revenue_recovery
+      TEST_MYSQL_URL: mysql://root:local@127.0.0.1:3307/revenue_recovery
+      # Both drivers or a red tick — see REQUIRED_DRIVERS in the suite.
+      CONTRACT_REQUIRE: postgres,mysql
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Migrate Postgres
+        run: npx tsx scripts/migrate.ts
+        env:
+          DATABASE_URL: ${{ env.TEST_POSTGRES_URL }}
+      - name: Migrate MySQL
+        run: npx tsx scripts/migrate.ts
+        env:
+          DATABASE_URL: ${{ env.TEST_MYSQL_URL }}
+      - name: Contract suite, both drivers
+        run: node --import tsx --test tests/db-contract.test.ts

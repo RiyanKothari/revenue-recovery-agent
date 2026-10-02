@@ -63,7 +63,7 @@ export default function AttestConsole() {
       <header style={header}>
         <h1 style={title}>Attest</h1>
         <p style={lede}>
-          Payment agents act. This proves they behaved. Four agents running live below,
+          Payment agents act. This proves they behaved. Six agents running live below,
           with no database and no model behind them, because none of them needs one.
         </p>
       </header>

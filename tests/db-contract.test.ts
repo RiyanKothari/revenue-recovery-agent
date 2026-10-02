@@ -170,9 +170,31 @@ after(async () => {
   }
 });
 
+/**
+ * Drivers this run is not allowed to skip, from CONTRACT_REQUIRE
+ * ("postgres,mysql"). Unset locally, so a laptop without Docker still gets an
+ * honest skip. Set in CI's contract job, where a skip would be a green tick
+ * over drivers nobody exercised — and where losing one database would
+ * otherwise go unnoticed, because the suite quietly runs against whichever
+ * driver it can still reach.
+ */
+const REQUIRED_DRIVERS = (process.env.CONTRACT_REQUIRE ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 /** Runs one assertion body against every reachable driver. */
 function forEachDriver(name: string, body: (db: RecoveryDb, driver: string) => Promise<void>) {
   test(name, async (t) => {
+    const missing = REQUIRED_DRIVERS.filter(
+      (required) => !targets.some((x) => x.name === required && x.db)
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `CONTRACT_REQUIRE names ${missing.join(", ")}, which could not be reached. ` +
+          "A required driver is a failure when absent, never a skip."
+      );
+    }
     const reachable = targets.filter((x) => x.db);
     if (reachable.length === 0) {
       t.skip("no database reachable — start docker compose to run the contract tests");
