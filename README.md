@@ -9,6 +9,7 @@ and the WhatsApp Cloud API, and then proves both that the money came back
 **Live:** [Dashboard](https://revenue-recovery-agent-plum.vercel.app/dashboard)
 · [Policy Lab](https://revenue-recovery-agent-plum.vercel.app/dashboard/policy)
 · [Red Team](https://revenue-recovery-agent-plum.vercel.app/dashboard/redteam)
+· [Attest](https://revenue-recovery-agent-plum.vercel.app/attest)
 · [Health](https://revenue-recovery-agent-plum.vercel.app/api/health)
 
 Deployed on Vercel (Mumbai) against Supabase Postgres (ap-south-1), the region
@@ -39,7 +40,7 @@ authorisation. Sending a nudge is the easy part. The hard parts are reaching the
 right person at a moment that helps without contacting someone who opted out,
 and then proving the recovery was caused rather than coincidental.
 
-Three properties distinguish this from a recovery bot:
+Four properties distinguish this from a recovery bot:
 
 **The agent is gated in code, not in a prompt.** Four guardrails (consent, retry
 ceiling, cooldown, refund and dispute kill switch) and a deterministic expected
@@ -54,10 +55,25 @@ baseline to compare against. The dashboard also reports the minimum detectable
 effect, so an inconclusive result reads as "this experiment was too small to
 tell" rather than "the agent did not work".
 
+**And the holdout prices itself.** Withholding help from one failed payment in
+ten has a cost, and holdouts usually run forever because stopping when the
+numbers look good is how experiments fool themselves (re-running a fixed test
+every 25 events "proved" a lift in 20.5% of simulated no-effect runs). An
+anytime-valid confidence sequence can be read after every event without that
+inflation, so the dashboard marks the moment the lift was proven and counts and
+prices every customer held out after it.
+
 **The safety rules are provable after the fact.** An independent verifier
 re-derives seven invariants from the recorded audit trail using code that shares
 nothing with the guardrails that enforce them. It runs on demand and gates a
 deploy.
+
+**Other agents can be audited by it too.** [Attest](https://revenue-recovery-agent-plum.vercel.app/attest)
+runs six checks on what payment agents do, live and without a database or a
+model: a challenge customers use to tell a genuine recovery message from a
+phishing copy, a dark-pattern check of message claims against the real offer,
+a fairness audit across customer groups, a hub-and-spoke cartel check across
+competing merchants, a simulator fidelity check, and an unlearning verifier.
 
 ---
 
@@ -75,7 +91,7 @@ real webhook route.
 | Safety conformance | **5,351 checks, 0 violations** across 7 invariants |
 | Red team | 10 hostile inputs against live defences, all refused |
 | Model economy | **11 model calls** served 908 decisions |
-| Tests | **434**, including a 34 case dual-driver database contract suite |
+| Tests | **571**, including a 39 case database contract suite run against real Postgres and MySQL in CI |
 
 The lift line is the only one that is a measurement rather than an attribution.
 Everything above it credits the agent for customers who might have retried
