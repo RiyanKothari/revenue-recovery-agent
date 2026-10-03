@@ -343,6 +343,15 @@ export interface RecoveryDb {
   // --- economics
   countDecisionsByRootCause(rootCause: string): Promise<number>;
   countRecoveredByRootCause(rootCause: string): Promise<number>;
+  /**
+   * Both counts above, for every root cause at once, in two grouped queries.
+   *
+   * The Policy Lab replay needs them for every cause in the batch. Asked one
+   * cause at a time that was two round trips per cause, and in production the
+   * round trips, not the counting, cost 3 to 6 seconds of every replay. A
+   * cause absent from the result has zero trials and zero successes.
+   */
+  observedStatsByRootCause(): Promise<{ root_cause: string; trials: number; successes: number }[]>;
 
   // --- decision memoisation
   getCachedDecision(cacheKey: string): Promise<CachedDecision | null>;

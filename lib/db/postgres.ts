@@ -763,6 +763,34 @@ export function createPostgresDb(connectionString: string): RecoveryDb {
       return Number(rows[0]?.count ?? 0);
     },
 
+    async observedStatsByRootCause() {
+      // Same predicates as the two per-cause counts above, grouped.
+      const [trials, successes] = await Promise.all([
+        query<{ root_cause: string; count: string }>(
+          `select root_cause, count(*)::text as count
+             from agent_decisions
+            where root_cause is not null
+            group by root_cause`
+        ),
+        query<{ root_cause: string; count: string }>(
+          `select re.root_cause, count(*)::text as count
+             from outcomes o
+             join revenue_events re on re.id = o.revenue_event_id
+            where re.root_cause is not null and o.recovered = true
+            group by re.root_cause`
+        ),
+      ]);
+      const byCause = new Map<string, { root_cause: string; trials: number; successes: number }>();
+      const entry = (cause: string) => {
+        let e = byCause.get(cause);
+        if (!e) byCause.set(cause, (e = { root_cause: cause, trials: 0, successes: 0 }));
+        return e;
+      };
+      for (const r of trials) entry(r.root_cause).trials = Number(r.count);
+      for (const r of successes) entry(r.root_cause).successes = Number(r.count);
+      return [...byCause.values()];
+    },
+
     // --- experiment
 
     async insertAssignment(row: AssignmentInsert) {

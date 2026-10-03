@@ -130,7 +130,7 @@ export async function POST(request: Request) {
 
     // Stopping rules ride in the same round as everything else; awaited on
     // their own afterwards, they cost up to 1.4s in production for one query.
-    const [events, consent, decisions, actions, assignments, outcomes, stops] =
+    const [events, consent, decisions, actions, assignments, outcomes, stops, grouped] =
       await Promise.all([
         db.listEvents(truncated ? MAX_REPLAY_EVENTS : undefined),
         db.listConsent(),
@@ -140,6 +140,12 @@ export async function POST(request: Request) {
         db.listOutcomes(),
         // For the fidelity check below.
         db.listStoppingRules(),
+        // Null on failure: the per-cause lookups below are the fallback, and
+        // they degrade to the prior rather than failing the replay.
+        db.observedStatsByRootCause().catch((err: any) => {
+          console.error("[replay] grouped observed stats failed:", err?.message ?? err);
+          return null;
+        }),
       ]);
     mark("load");
 
@@ -184,16 +190,23 @@ export async function POST(request: Request) {
      * hundred times would make the panel unusable.
      */
     //
-    // Looked up concurrently. One cause at a time, each lookup two queries at
-    // roughly 200ms a round trip in production, this was 3 to 6 seconds of
-    // every replay — more than everything else in the route together.
+    // From one grouped read in the batch above. One cause at a time, each
+    // lookup two round trips at roughly 200ms in production, this was 3 to 6
+    // seconds of every replay; in parallel it was still 2.8, because the cost
+    // was the round trips, not the counting. The per-cause path remains as
+    // the fallback if the grouped read failed.
     const causes = [...new Set(events.map((e) => e.root_cause ?? "unknown"))];
+    const groupedByCause = grouped
+      ? new Map(grouped.map((g) => [g.root_cause, { trials: g.trials, successes: g.successes }]))
+      : null;
     const observedByCause = new Map<string, number>(
       await Promise.all(
-        causes.map(
-          async (cause) =>
-            [cause, estimateRecoveryProbability(cause, await getObservedStats(cause))] as const
-        )
+        causes.map(async (cause) => {
+          const observed = groupedByCause
+            ? groupedByCause.get(cause) ?? { trials: 0, successes: 0 }
+            : await getObservedStats(cause);
+          return [cause, estimateRecoveryProbability(cause, observed)] as const;
+        })
       )
     );
 

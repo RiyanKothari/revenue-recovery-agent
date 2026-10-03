@@ -582,6 +582,77 @@ forEachDriver("a single event's decision and outcome are fetched directly", asyn
   assert.ok(outcome?.resolved_at, `${driver}: resolved_at survives`);
 });
 
+forEachDriver("grouped observed stats agree with the per-cause counts they replace", async (db, driver) => {
+  /**
+   * The Policy Lab replay reads every cause's trials and successes in one
+   * grouped query instead of two queries per cause. It is only allowed to be
+   * faster, not different, so it is pinned to the per-cause counts that the
+   * live pipeline still uses — on both engines.
+   *
+   * Causes are unique to this run so that rows from anything else in the
+   * database cannot make the totals pass by accident.
+   */
+  const causeX = `${RUN}_cause_x_${driver}`;
+  const causeY = `${RUN}_cause_y_${driver}`;
+  const now = new Date().toISOString();
+
+  const decide = async (eventId: string, cause: string) =>
+    db.insertDecision({
+      revenue_event_id: eventId,
+      root_cause: cause,
+      chosen_action: "send_retry_link_whatsapp",
+      rationale: "grouped stats contract",
+      bounded_by: [],
+    });
+  const recover = async (eventId: string, recovered: boolean, suffix: string) =>
+    db.insertOutcome({
+      revenue_event_id: eventId,
+      recovered,
+      recovered_amount_paise: recovered ? 1000 : null,
+      recovered_payment_id: `${RUN}_grp_${suffix}_${driver}`,
+      attribution_window_minutes: 1440,
+      resolved_at: now,
+    } as any);
+
+  // X: two decisions, one of which recovered.
+  const a = await newEvent(db, `grp_a_${driver}`);
+  const b = await newEvent(db, `grp_b_${driver}`);
+  // Y: one decision that did not recover, and one recovery with NO decision —
+  // successes join on the event's cause, not on whether the agent decided.
+  const c = await newEvent(db, `grp_c_${driver}`);
+  const d = await newEvent(db, `grp_d_${driver}`);
+  for (const [id, cause] of [[a, causeX], [b, causeX], [c, causeY], [d, causeY]] as const) {
+    await db.setClassification(id, cause, now);
+  }
+  await decide(a, causeX);
+  await decide(b, causeX);
+  await decide(c, causeY);
+  await recover(a, true, "a");
+  await recover(c, false, "c");
+  await recover(d, true, "d");
+
+  const grouped = new Map((await db.observedStatsByRootCause()).map((g) => [g.root_cause, g]));
+
+  assert.deepEqual(
+    { trials: grouped.get(causeX)?.trials, successes: grouped.get(causeX)?.successes },
+    { trials: 2, successes: 1 },
+    `${driver}: cause X`
+  );
+  assert.deepEqual(
+    { trials: grouped.get(causeY)?.trials, successes: grouped.get(causeY)?.successes },
+    { trials: 1, successes: 1 },
+    `${driver}: cause Y`
+  );
+  for (const cause of [causeX, causeY]) {
+    assert.equal(grouped.get(cause)!.trials, await db.countDecisionsByRootCause(cause), `${driver}: trials ${cause}`);
+    assert.equal(grouped.get(cause)!.successes, await db.countRecoveredByRootCause(cause), `${driver}: successes ${cause}`);
+  }
+  for (const g of grouped.values()) {
+    assert.equal(typeof g.trials, "number", `${driver}: trials numeric`);
+    assert.equal(typeof g.successes, "number", `${driver}: successes numeric`);
+  }
+});
+
 forEachDriver("a resumed event's FIRST decision is the one returned", async (db, driver) => {
   // A resumed delivery can write a second decision. The first is the one that
   // governed the action actually taken, so it is the one the trace must show.
