@@ -248,7 +248,10 @@ function Comparison({ result }: { result: ReplayResponse }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div className="rr-card">
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+        {/* Wraps: unwrapped, these chips ran 34px past a 320px screen. */}
+        <div
+          style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 14 }}
+        >
           <span className="rr-chip rr-chip--neutral">Policy v1</span>
           <span style={{ color: "var(--rr-text-3)" }}>→</span>
           <span className="rr-chip rr-chip--blue">Candidate (simulated)</span>

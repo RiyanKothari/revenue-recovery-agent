@@ -99,9 +99,28 @@ export async function measure(
         // Let late data (polling cards, charts) settle before measuring.
         await page.waitForTimeout(1500);
         const m = await page.evaluate((w) => {
+          // Content inside a container that scrolls or clips horizontally is
+          // allowed past the viewport; it is the container that must fit. Left
+          // in, a correctly scrolling table hid the element actually pushing
+          // the page out.
+          // (No named helper: this body runs in the page, where the TypeScript
+          // runner's __name shim for named functions does not exist.)
           const offenders = [...document.querySelectorAll("body *")]
-            .map((el) => ({ el, right: el.getBoundingClientRect().right }))
-            .filter(({ el, right }) => right > w + 1 && (el as HTMLElement).offsetWidth > 0)
+            .map((el) => {
+              let scrolled = false;
+              for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+                const ox = getComputedStyle(p).overflowX;
+                if (ox === "auto" || ox === "scroll" || ox === "hidden" || ox === "clip") {
+                  scrolled = true;
+                  break;
+                }
+              }
+              return { el, right: el.getBoundingClientRect().right, scrolled };
+            })
+            .filter(
+              ({ el, right, scrolled }) =>
+                right > w + 1 && (el as HTMLElement).offsetWidth > 0 && !scrolled
+            )
             .sort((a, b) => b.right - a.right)
             .slice(0, 3)
             .map(({ el, right }) => {
