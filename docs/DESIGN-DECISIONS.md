@@ -101,3 +101,13 @@ Three changes, each answering a different question with the right tool:
 - **What the test could have seen** (`assessPower`) evaluates variance at the pooled rate. Evaluated at the control rate alone it went blank exactly when the control arm had recovered nobody, which is the moment the "this holdout is too small" explanation matters most.
 
 On tiny arms the minimum detectable effect can exceed 100pp, which is a way of saying the comparison can resolve nothing. `describeSensitivity` says that in words instead of printing an impossible percentage, and every report that names a sensitivity goes through it.
+
+## The holdout prices itself, with a sequence that is valid however often it is read
+
+A holdout is the only way the lift is measured rather than claimed, and it has a cost no dashboard prints: every control customer is a failed payment the agent could have helped and deliberately did not. The usual answer to "how long?" is "forever", because stopping a test when it looks good inflates false positives. That is measurable here, so it was measured: re-running the exact test every 25 events and stopping at the first p < 0.05 declared a lift in 20.5% of 1,000 simulated runs that had none.
+
+`lib/price-of-proof.ts` instead runs a confidence sequence over the inverse-propensity estimate of the lift. A sequence holds at every moment at once, so reading it after every event is legitimate; the first event where it clears zero is when the experiment had earned its answer, and every control customer after that is counted and priced at the sequence's lower bound, not its point estimate.
+
+It is the empirical-Bernstein sequence (Waudby-Smith and Ramdas), not the asymptotic sequence it was first built with. The asymptotic one measured 6.0% false proofs against its promised 5%, because "asymptotically valid" is not valid at a demo's sample size. Empirical-Bernstein uses the fact that each event's contribution is bounded to hold at every n: 1.2% on the same runs. It proves a 21pp lift around event 500 rather than 356. A feature whose entire claim is "valid however often you look" does not get to be valid only usually.
+
+The calculation is isolated in the summary route: if it throws, this card is absent and every older card still renders. The chart is in a Blade-free module so it can be rendered in a Node test, which it now is, after its axis shipped reading "+31.818181818181817pp".
