@@ -117,3 +117,9 @@ The card around it is rendered too (`tests/price-of-proof-card.test.ts`), once p
 ## The build fetches nothing
 
 Fonts ship in `app/fonts` through `next/font/local`, not `next/font/google`. The Google loader downloads at build time, so every build needed Google to answer, and one CI run failed inside `next/font` with nothing changed before a re-run passed. A build that can fail on someone else's server is not reproducible, and it fails on its own schedule, which may be submission day. `tests/self-hosted-fonts.test.ts` refuses any Google font reference under `app/`, checks each named file really is WOFF2 (signature `wOF2`), and that the OFL licence travels with it.
+
+## Phone layout is checked against production, not in the unit suite
+
+Whether a page scrolls sideways depends on the browser, the viewport and the real data on the page, none of which a unit test or CI's empty test databases have. So `scripts/check-layout.ts` drives a real Chrome (the one already installed, through playwright-core, which downloads no browser) against the production site after each production deploy, at 320px and 375px. It waits for each page's data rather than its shell, presses Replay on the Policy Lab because the widest table only exists afterwards, and blames only elements not already inside a scrolling container.
+
+It was shown to fail before it was trusted. Its first version waited for "Red Team", which the nav renders before any results, and passed with the original 7px Red Team bug re-injected; it now reports that bug as 8px too wide. Its first production run then failed for real, on the Policy Lab's replay table (137 to 173px too wide) and a chip row (34px), both fixed.

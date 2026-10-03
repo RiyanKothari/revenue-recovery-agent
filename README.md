@@ -256,7 +256,7 @@ secure and is not.
 npm test
 ```
 
-434 tests, no credentials required. Every module that touches an external
+575 tests, no credentials required. Every module that touches an external
 service takes it as an injected dependency, so the safety rules are tested
 against simulated database outages and the send path is tested without
 contacting Razorpay or Meta.
@@ -267,10 +267,20 @@ outage, the classifier's fail-closed branch, webhook signature rejection
 model response, a recovery action that cannot be recorded, and concurrent
 webhook redeliveries racing for the same event.
 
-The dual-driver contract suite in `tests/db-contract.test.ts` runs the same 30
-case sequence against PostgreSQL and MySQL and asserts they agree. It skips
+The dual-driver contract suite in `tests/db-contract.test.ts` runs the same 39
+cases against PostgreSQL and MySQL and asserts they agree. Locally it skips
 rather than fails when no database is reachable, so the suite still runs without
-Docker.
+Docker. CI's `contract` job starts both engines and sets
+`CONTRACT_REQUIRE=postgres,mysql`, under which a missing driver fails the run.
+
+Phone layout is checked against production after every production deploy
+(`.github/workflows/layout.yml`): a headless Chrome opens every page at 320px
+and 375px, presses Replay on the Policy Lab, and fails on any sideways scroll.
+Run it yourself against any deployment:
+
+```bash
+npm run check:layout -- https://revenue-recovery-agent-plum.vercel.app
+```
 
 ---
 
