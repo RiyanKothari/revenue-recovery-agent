@@ -88,7 +88,8 @@ function Band({ report }: { report: PriceOfProofReport }) {
   const n = s[s.length - 1].index;
   // Clip the early, very wide part of the band so the narrowing is legible;
   // the axis says where it was clipped.
-  const yMax = Math.min(60, Math.max(10, ...s.map((p) => p.estimatePp + 10)));
+  // Rounded up to a whole 10pp so the axis reads +40pp, not +31.8181…pp.
+  const yMax = Math.min(60, Math.max(10, Math.ceil(Math.max(...s.map((p) => p.estimatePp + 10)) / 10) * 10));
   const yMin = -yMax;
   const x = (i: number) => PAD.l + ((i - 1) / Math.max(1, n - 1)) * (W - PAD.l - PAD.r);
   const y = (v: number) => {
