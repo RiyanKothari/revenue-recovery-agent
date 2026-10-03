@@ -77,6 +77,20 @@ export async function POST(request: Request) {
    * do that repeatedly at the database's expense. Twenty a minute is far
    * more than the Policy Lab's slider needs and far less than a loop wants.
    */
+  /**
+   * Phase timings, returned as a standard Server-Timing header. The replay
+   * measured 8 to 10 seconds per call on the deployed instance, warm, which
+   * spends most of a slider drag on a spinner; these say where, from
+   * production rather than from a laptop with a different database distance.
+   */
+  const timings: string[] = [];
+  let phaseStart = performance.now();
+  const mark = (name: string) => {
+    const now = performance.now();
+    timings.push(`${name};dur=${(now - phaseStart).toFixed(0)}`);
+    phaseStart = now;
+  };
+
   let db;
   try {
     db = getDb();
@@ -88,6 +102,7 @@ export async function POST(request: Request) {
   // why the per-process version was measured to do almost nothing here.
   const limit = await enforceRateLimit("replay", 20, 60_000, db);
   if (!limit.allowed) return rateLimited(limit.retryAfterSeconds);
+  mark("rate_limit");
 
   let body: ReplayRequest = {};
   try {
@@ -111,6 +126,7 @@ export async function POST(request: Request) {
      */
     const totalEvents = await db.countEvents();
     const truncated = totalEvents > MAX_REPLAY_EVENTS;
+    mark("count");
 
     const [events, consent, decisions, actions, assignments, outcomes] = await Promise.all([
       db.listEvents(truncated ? MAX_REPLAY_EVENTS : undefined),
@@ -121,8 +137,11 @@ export async function POST(request: Request) {
       db.listOutcomes(),
     ]);
 
+    mark("load");
+
     // Stopping rules, for the fidelity check below.
     const stops = await db.listStoppingRules();
+    mark("stops");
 
     const dndByCustomer = new Map(consent.map((c) => [c.customer_id, c.dnd]));
     const eventIdByDecision = new Map(decisions.map((d) => [d.id, d.revenue_event_id]));
@@ -171,6 +190,8 @@ export async function POST(request: Request) {
       const observed = await getObservedStats(cause);
       observedByCause.set(cause, estimateRecoveryProbability(cause, observed));
     }
+
+    mark("observed_stats");
 
     const recoveredById = new Map(
       outcomes
@@ -267,7 +288,9 @@ export async function POST(request: Request) {
       observedArms
     );
 
-    return NextResponse.json({
+    mark("compute");
+
+    const response = NextResponse.json({
       events_replayed: replayEvents.length,
       scope: {
         events_total: totalEvents,
@@ -304,6 +327,8 @@ export async function POST(request: Request) {
           "Recovered rupees. Nobody knows whether a customer who was never contacted would have paid; the estimate applies conversion rates measured on the arms that actually ran.",
       },
     });
+    response.headers.set("Server-Timing", timings.join(", "));
+    return response;
   } catch (err) {
     return apiError("replay_failed", 500, err);
   }
