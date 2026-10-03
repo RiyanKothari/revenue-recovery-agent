@@ -128,20 +128,20 @@ export async function POST(request: Request) {
     const truncated = totalEvents > MAX_REPLAY_EVENTS;
     mark("count");
 
-    const [events, consent, decisions, actions, assignments, outcomes] = await Promise.all([
-      db.listEvents(truncated ? MAX_REPLAY_EVENTS : undefined),
-      db.listConsent(),
-      db.listDecisions(),
-      db.listRecoveryActions(),
-      db.listAssignments(),
-      db.listOutcomes(),
-    ]);
-
+    // Stopping rules ride in the same round as everything else; awaited on
+    // their own afterwards, they cost up to 1.4s in production for one query.
+    const [events, consent, decisions, actions, assignments, outcomes, stops] =
+      await Promise.all([
+        db.listEvents(truncated ? MAX_REPLAY_EVENTS : undefined),
+        db.listConsent(),
+        db.listDecisions(),
+        db.listRecoveryActions(),
+        db.listAssignments(),
+        db.listOutcomes(),
+        // For the fidelity check below.
+        db.listStoppingRules(),
+      ]);
     mark("load");
-
-    // Stopping rules, for the fidelity check below.
-    const stops = await db.listStoppingRules();
-    mark("stops");
 
     const dndByCustomer = new Map(consent.map((c) => [c.customer_id, c.dnd]));
     const eventIdByDecision = new Map(decisions.map((d) => [d.id, d.revenue_event_id]));
@@ -183,13 +183,19 @@ export async function POST(request: Request) {
      * per event: the estimate depends only on the cause, and querying it four
      * hundred times would make the panel unusable.
      */
-    const observedByCause = new Map<string, number>();
-    for (const event of events) {
-      const cause = event.root_cause ?? "unknown";
-      if (observedByCause.has(cause)) continue;
-      const observed = await getObservedStats(cause);
-      observedByCause.set(cause, estimateRecoveryProbability(cause, observed));
-    }
+    //
+    // Looked up concurrently. One cause at a time, each lookup two queries at
+    // roughly 200ms a round trip in production, this was 3 to 6 seconds of
+    // every replay — more than everything else in the route together.
+    const causes = [...new Set(events.map((e) => e.root_cause ?? "unknown"))];
+    const observedByCause = new Map<string, number>(
+      await Promise.all(
+        causes.map(
+          async (cause) =>
+            [cause, estimateRecoveryProbability(cause, await getObservedStats(cause))] as const
+        )
+      )
+    );
 
     mark("observed_stats");
 
