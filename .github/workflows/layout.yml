@@ -1,0 +1,39 @@
+# Checks that no page scrolls sideways on a phone, against production, after
+# every production deploy.
+#
+# Layout is decided by the browser, the viewport and the real data on the
+# page, so it cannot be checked by the unit suite or against CI's empty test
+# databases. Red Team shipped 7px too wide for a 375px screen and the Policy
+# Lab's results table 137px too wide, and nothing noticed either until this
+# check was pointed at the live site.
+#
+# It targets the production alias rather than the deployment's own URL,
+# because Vercel puts per-deployment URLs behind its login. The alias serves
+# the new build by the time Vercel reports the deployment successful.
+name: Layout
+
+on:
+  deployment_status:
+
+jobs:
+  phone-layout:
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'Production'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.deployment.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      # Uses the Chrome GitHub's Ubuntu runners already ship; playwright-core
+      # downloads no browser of its own.
+      - name: No sideways scroll at 320px and 375px
+        run: npm run check:layout -- https://revenue-recovery-agent-plum.vercel.app

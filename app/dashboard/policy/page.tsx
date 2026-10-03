@@ -254,77 +254,82 @@ function Comparison({ result }: { result: ReplayResponse }) {
           <span className="rr-chip rr-chip--blue">Candidate (simulated)</span>
         </div>
 
-        <table className="rr-table">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Current</th>
-              <th>Simulated</th>
-              <th>Delta</th>
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((key) => {
-              const before = result.baseline.totals[key];
-              const after = result.candidate.totals[key];
-              const delta = result.deltas[key];
-
-              return (
-                <tr key={key}>
-                  <td className="rr-metric">{ROW_LABELS[key]}</td>
-                  <td className="rr-mono">{before}</td>
-                  <td className="rr-mono">{after}</td>
-                  <td>
-                    {delta === 0 ? (
-                      <span style={{ color: "var(--rr-text-3)" }}>—</span>
-                    ) : (
-                      <Chip tone={key === REACH && delta > 0 ? "green" : "neutral"}>
-                        {delta > 0 ? `↑ +${delta}` : `↓ ${delta}`}
-                      </Chip>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-
-            <tr>
-              <td className="rr-metric">
-                Value at risk addressed
-                <span style={{ color: "var(--rr-text-3)", marginLeft: 6, fontSize: 10.5 }}>
-                  exact
-                </span>
-              </td>
-              <td className="rr-mono">{rupees(result.baseline.actedAtRiskPaise)}</td>
-              <td className="rr-mono">{rupees(result.candidate.actedAtRiskPaise)}</td>
-              <td>
-                <DeltaMoney
-                  delta={result.candidate.actedAtRiskPaise - result.baseline.actedAtRiskPaise}
-                />
-              </td>
-            </tr>
-
-            {result.estimate?.calibrated && (
+        {/* Scrolls inside its card on a phone rather than pushing the whole
+            page sideways: at 375px this table is about 510px wide. Focusable
+            and labelled so a keyboard user can scroll it too. */}
+        <div className="rr-table-scroll" tabIndex={0} role="region" aria-label="Policy comparison">
+          <table className="rr-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Current</th>
+                <th>Simulated</th>
+                <th>Delta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((key) => {
+                const before = result.baseline.totals[key];
+                const after = result.candidate.totals[key];
+                const delta = result.deltas[key];
+  
+                return (
+                  <tr key={key}>
+                    <td className="rr-metric">{ROW_LABELS[key]}</td>
+                    <td className="rr-mono">{before}</td>
+                    <td className="rr-mono">{after}</td>
+                    <td>
+                      {delta === 0 ? (
+                        <span style={{ color: "var(--rr-text-3)" }}>—</span>
+                      ) : (
+                        <Chip tone={key === REACH && delta > 0 ? "green" : "neutral"}>
+                          {delta > 0 ? `↑ +${delta}` : `↓ ${delta}`}
+                        </Chip>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+  
               <tr>
                 <td className="rr-metric">
-                  Recovery
-                  <span
-                    className="rr-chip rr-chip--amber"
-                    style={{ marginLeft: 8, fontSize: 10 }}
-                  >
-                    estimated
+                  Value at risk addressed
+                  <span style={{ color: "var(--rr-text-3)", marginLeft: 6, fontSize: 10.5 }}>
+                    exact
                   </span>
                 </td>
-                <td className="rr-mono" style={{ color: "var(--rr-text-3)" }}>
-                  —
-                </td>
-                <td className="rr-mono">{rupees(result.estimate.estimatedRecoveredPaise)}</td>
+                <td className="rr-mono">{rupees(result.baseline.actedAtRiskPaise)}</td>
+                <td className="rr-mono">{rupees(result.candidate.actedAtRiskPaise)}</td>
                 <td>
-                  <span style={{ color: "var(--rr-text-3)" }}>—</span>
+                  <DeltaMoney
+                    delta={result.candidate.actedAtRiskPaise - result.baseline.actedAtRiskPaise}
+                  />
                 </td>
               </tr>
-            )}
-          </tbody>
-        </table>
+  
+              {result.estimate?.calibrated && (
+                <tr>
+                  <td className="rr-metric">
+                    Recovery
+                    <span
+                      className="rr-chip rr-chip--amber"
+                      style={{ marginLeft: 8, fontSize: 10 }}
+                    >
+                      estimated
+                    </span>
+                  </td>
+                  <td className="rr-mono" style={{ color: "var(--rr-text-3)" }}>
+                    —
+                  </td>
+                  <td className="rr-mono">{rupees(result.estimate.estimatedRecoveredPaise)}</td>
+                  <td>
+                    <span style={{ color: "var(--rr-text-3)" }}>—</span>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* --- The honesty boundary, on screen rather than in a README. --- */}

@@ -14,7 +14,8 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "razorpay:swap": "tsx scripts/swap-razorpay-key.ts",
     "seed:offers": "tsx scripts/seed-offers.ts",
-    "coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include=lib/** tests/*.test.ts"
+    "coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include=lib/** tests/*.test.ts",
+    "check:layout": "tsx scripts/check-layout.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
@@ -39,6 +40,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.7",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0"
   }
