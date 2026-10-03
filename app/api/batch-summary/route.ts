@@ -4,6 +4,7 @@ import { apiError } from "@/lib/api-errors";
 import { assessPower } from "@/lib/experiment";
 import { collectDeliveryStates, measureWithDelivery } from "@/lib/delivery-attrition";
 import { DEFAULT_POLICY } from "@/lib/policy";
+import { measurePriceOfProof } from "@/lib/price-of-proof";
 import { bucketOutcomes } from "@/lib/outcome-buckets";
 import { armSeries, causePerformance, dailySeries } from "@/lib/analytics";
 
@@ -94,6 +95,37 @@ export async function GET() {
   const recoveredById = new Map(
     recoveredEvents.map((o) => [o.revenue_event_id, o.recovered_amount_paise ?? 0])
   );
+
+  /**
+   * What the holdout costs, and when it had already earned its answer. Read
+   * in arrival order over every assigned event; see lib/price-of-proof.ts.
+   * Assignments whose event is missing are skipped rather than guessed at.
+   *
+   * Isolated: a fault in this newer card must never take down the summary
+   * every older card depends on. It degrades to null, which the dashboard
+   * simply does not render.
+   */
+  const eventsById = new Map(events.map((e) => [e.id, e]));
+  let priceOfProof: ReturnType<typeof measurePriceOfProof> | null = null;
+  try {
+    priceOfProof = measurePriceOfProof(
+      assignments.flatMap((a) => {
+        const event = eventsById.get(a.revenue_event_id);
+        if (!event || (a.arm !== "treated" && a.arm !== "control")) return [];
+        return [
+          {
+            arm: a.arm as "treated" | "control",
+            recovered: recoveredById.has(a.revenue_event_id),
+            amountPaise: event.amount_paise,
+            atIso: event.received_at,
+          },
+        ];
+      }),
+      { controlProbability: DEFAULT_POLICY.holdoutPercent / 100 }
+    );
+  } catch (err: any) {
+    console.error("[batch-summary] price of proof failed:", err?.message ?? err);
+  }
 
   /**
    * The arms are built by the delivery-aware measurement rather than here,
@@ -211,6 +243,8 @@ export async function GET() {
      * message provably reached. `intention_to_treat` above is the claimable
      * number; this says how much of it undelivered messages are eating.
      */
+    price_of_proof: priceOfProof,
+
     delivery: {
       evidence_coverage: delivery.evidenceCoverage,
       attrition: delivery.attrition,

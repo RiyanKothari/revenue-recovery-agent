@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { LiftResult, PowerResult } from "@/lib/statistics";
+import type { PriceOfProofReport } from "@/lib/price-of-proof";
+import { PriceOfProofCard } from "./price-of-proof";
 import { MoneyRiver, type Bucket } from "./money-river";
 import { CausePerformance, RecoveryTrend, type ArmPoint, type CauseRow, type DayPoint } from "./trend";
 import {
@@ -73,6 +75,8 @@ interface Summary {
    * above are as assigned, which counts a customer whose message Meta dropped
    * as a customer who was nudged.
    */
+  /** The holdout, priced. See lib/price-of-proof.ts. */
+  price_of_proof: PriceOfProofReport | null;
   delivery: {
     evidence_coverage: number;
     attrition: {
@@ -307,6 +311,7 @@ export default function DashboardPage() {
             {summary && (
               <LiftCard experiment={summary.experiment} delivery={summary.delivery} />
             )}
+            {summary?.price_of_proof && <PriceOfProofCard report={summary.price_of_proof} />}
             {conformance && <ConformanceCard data={conformance} />}
             {conformance && <RulesCostCard data={conformance} />}
             {cache && <CacheCard stats={cache} />}
