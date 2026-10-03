@@ -3,9 +3,12 @@ import assert from "node:assert/strict";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { measurePriceOfProof, type ProofObservation } from "../lib/price-of-proof";
+import { ProofBand, axisHalfRangePp } from "../app/dashboard/proof-band";
 
 // tsconfig keeps JSX as "preserve" for Next, so the component compiles to the
 // classic React.createElement and needs React in scope when run under Node.
+// It is read at render time, not at import time, so setting it here is early
+// enough even though the import above is hoisted.
 (globalThis as any).React = React;
 
 /**
@@ -29,8 +32,7 @@ function batch(n: number, treatedRate: number, controlRate: number): ProofObserv
   });
 }
 
-async function render(report: ReturnType<typeof measurePriceOfProof>) {
-  const { ProofBand } = await import("../app/dashboard/proof-band");
+function render(report: ReturnType<typeof measurePriceOfProof>) {
   return renderToStaticMarkup(React.createElement(ProofBand, { report }));
 }
 
@@ -39,7 +41,7 @@ const labels = (html: string) =>
 
 test("axis labels are whole multiples of 10pp, never raw floating point", async () => {
   const report = measurePriceOfProof(batch(1000, 0.33, 0.12), { controlProbability: 0.1 });
-  const html = await render(report);
+  const html = render(report);
   const axis = labels(html).filter((l) => /pp$/.test(l));
 
   assert.equal(axis.length, 2, `expected a top and bottom label, got ${axis}`);
@@ -52,7 +54,7 @@ test("a proven run draws the marker where the report says, and says so to a scre
   const report = measurePriceOfProof(batch(1500, 0.4, 0.05), { controlProbability: 0.1 });
   assert.equal(report.verdict, "proven", "fixture must actually prove the lift");
 
-  const html = await render(report);
+  const html = render(report);
   assert.ok(labels(html).includes("proven"));
   assert.match(html, new RegExp(`clearing zero at event ${report.provenAt!.index}\\.`));
 });
@@ -61,14 +63,12 @@ test("an unproven run draws no marker and does not claim to have cleared zero", 
   const report = measurePriceOfProof(batch(200, 0.2, 0.2), { controlProbability: 0.1 });
   assert.notEqual(report.verdict, "proven");
 
-  const html = await render(report);
+  const html = render(report);
   assert.ok(!labels(html).includes("proven"));
   assert.match(html, /it has not cleared zero/);
 });
 
 test("the axis half-range rounds up, and stays within its clip", async () => {
-  const { axisHalfRangePp } = await import("../app/dashboard/proof-band");
-
   assert.equal(axisHalfRangePp([21.818]), 40, "31.8 rounds up to 40, never prints raw");
   assert.equal(axisHalfRangePp([0]), 10, "the floor");
   assert.equal(axisHalfRangePp([95]), 60, "the clip");
