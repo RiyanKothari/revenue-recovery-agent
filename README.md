@@ -71,6 +71,7 @@ real webhook route.
 | Recovery rate | **25.7%** overall, 33.2% of events acted on |
 | Measured lift vs holdout | **+21.0pp**, 95% CI [13.3, 27.3], Fisher exact p < 0.001 |
 | Incremental recovery | **₹7,56,499** |
+| Price of proof | Lift proven at **event 786 of 1,004** by an anytime-valid sequence; 22 customers held out after that |
 | Safety conformance | **5,351 checks, 0 violations** across 7 invariants |
 | Red team | 10 hostile inputs against live defences, all refused |
 | Model economy | **11 model calls** served 908 decisions |
