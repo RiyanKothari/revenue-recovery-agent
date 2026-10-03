@@ -113,3 +113,7 @@ It is the empirical-Bernstein sequence (Waudby-Smith and Ramdas), not the asympt
 The calculation is isolated in the summary route: if it throws, this card is absent and every older card still renders. The chart is in a Blade-free module so it can be rendered in a Node test, which it now is, after its axis shipped reading "+31.818181818181817pp".
 
 The card around it is rendered too (`tests/price-of-proof-card.test.ts`), once per verdict, inside `BladeProvider` with the same theme `app/providers.tsx` uses. Blade reads its tokens from that provider and throws without it, which is why the card went untested at first. Importing Blade costs the suite about fifteen seconds; test files run in parallel, so it is paid once. Any new Blade-built card can be tested the same way.
+
+## The build fetches nothing
+
+Fonts ship in `app/fonts` through `next/font/local`, not `next/font/google`. The Google loader downloads at build time, so every build needed Google to answer, and one CI run failed inside `next/font` with nothing changed before a re-run passed. A build that can fail on someone else's server is not reproducible, and it fails on its own schedule, which may be submission day. `tests/self-hosted-fonts.test.ts` refuses any Google font reference under `app/`, checks each named file really is WOFF2 (signature `wOF2`), and that the OFL licence travels with it.
